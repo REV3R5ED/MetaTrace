@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+      - name: Test with coverage gate
+        run: pytest -q
+
+  quality:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+      - name: Lint
+        run: ruff check .
+      - name: Format check
+        run: ruff format --check .
+      - name: Type check
+        run: mypy src
+
+  windows-smoke:
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e .
+      - name: Smoke test CLI
+        shell: bash
+        run: |
+          metatrace --help
+          metatrace --version
+          # Minimal 1x1 PNG, built byte-by-byte: exercises identify end-to-end.
+          python -c "
+          import struct
+          ihdr = struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0)
+          png = b'\x89PNG\r\n\x1a\n' + struct.pack('>I', 13) + b'IHDR' + ihdr + b'\x00'*4
+          open('smoke.png', 'wb').write(png)
+          "
+          metatrace inspect smoke.png
+          metatrace inspect smoke.png --json | python -c "import json,sys; d=json.load(sys.stdin); assert d['status']=='ok'"
+
+  release-artifact:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+      - name: Validate distribution metadata
+        run: python -m twine check dist/*
+      - name: Install built wheel
+        run: python -m pip install dist/*.whl
+      - name: Smoke test installed CLI
+        run: |
+          metatrace --help
+      - name: Preserve validated distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: metatrace-dist-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
