@@ -10,13 +10,13 @@ The core forensic rule: **observed metadata is kept verbatim; normalized fields 
 
 MIT — see [LICENSE](LICENSE). Free for personal and commercial use.
 
-## v0.1 — what works today
+## v0.2 — what works today
 
 - **File identification**: magic-byte format detection (JPEG, PNG, GIF, BMP, WebP, TIFF) and dimension parsing — pure stdlib, no Pillow
 - **Evidence hashing**: SHA-256 (always) and optional SHA-512, streamed, computed *before* any parsing
-- **Basic EXIF**: TIFF/EXIF parser in pure stdlib (both endiannesses) — make/model, timestamps, orientation, ISO, exposure, aperture, focal length, flash, lens, software; raw tag values preserved verbatim
-- **Defensive parsing**: truncated or malicious files produce recorded warnings, never crashes; file-size and value-size bounds
-- **CLI**: `metatrace inspect <image>` with human-readable output and `--json`; structured exit codes (0 ok / 1 findings / 2 error); audit logging of every invocation
+- **Full EXIF + GPS normalization**: TIFF/EXIF parser in pure stdlib (both endiannesses) — make/model, timestamps, orientation, ISO, exposure, aperture, focal length, flash, lens, software; GPS IFD decoded to decimal coordinates, altitude, bearing, UTC timestamp with validity checks; raw tag values preserved verbatim
+- **Defensive parsing**: truncated or malicious files produce recorded warnings, never crashes; file-size and value-size bounds; invalid GPS values become explained findings, never silent drops
+- **CLI**: `metatrace inspect <image>` with human-readable output and `--json`; `--map-link` prints an OpenStreetMap URL for GPS coordinates (no network request); structured exit codes (0 ok / 1 findings / 2 error); audit logging of every invocation
 - **Framework for the roadmap**: parser/plugin registry, normalized evidence models, JSON config profiles
 
 ## Install
@@ -33,14 +33,14 @@ pip install -e .
 
 ```bash
 $ metatrace inspect photo.jpg
-sample-photo.jpg: JPEG 4032x3024, 318 bytes, EXIF present
-evidence_id:  MT-bc4cd04ace573156
-file:         /tmp/sample-photo.jpg (318 bytes)
-format:       JPEG (image/jpeg), 4032x3024
+gps-photo.jpg: JPEG 64x48, 607 bytes, EXIF present
+evidence_id:  MT-640b58c4bfea35bd
+file:         /tmp/mt-docs/gps-photo.jpg (607 bytes)
+format:       JPEG (image/jpeg), 64x48
 encoding:     JPEG (baseline DCT)
-sha256:      bc4cd04ace573156a24b34ac77aa3a174d8935ece710575f70b62ce78f77bf01
-analyzed_at:  2026-10-02T23:16:11.037638Z (UTC)
-tool:         metatrace 0.1.0
+sha256:      640b58c4bfea35bd803fa88b7671bb322f06892a42ff619e1a117d1bd7da82ab
+analyzed_at:  2026-10-02T23:37:55.656252Z (UTC)
+tool:         metatrace 0.2.0
 
 EXIF (normalized | raw kept in --json):
   make               TestMake
@@ -55,17 +55,30 @@ EXIF (normalized | raw kept in --json):
   f_number           f/2.8
   focal_length       50.0mm
   flash              did not fire
-  gps_ifd            absent
   thumbnail_ifd      absent
-  raw tags:      13 captured
+  raw tags:      14 captured
+
+GPS:
+  note         GPS coordinates record the location stored in the file's metadata; they do not prove where the photograph was taken.
+  coordinates  49.337556, -123.162444
+  altitude     42.0 m
+  bearing      90.0° (true north)
+  gps_time     2026-09-14T18:42:07Z
+  method       GPS
+  dop          2.5
+  raw tags:    13 captured
 ```
+
+*(Output above is from a synthetic test file; dimensions, hashes, and
+timestamps will differ for real photos.)*
 
 Machine-readable output for pipelines:
 
 ```bash
-metatrace inspect photo.jpg --json | jq '.data.analysis.exif.make'
-metatrace inspect photo.jpg --sha512   # also compute SHA-512
-metatrace config show                  # effective configuration
+metatrace inspect photo.jpg --json | jq '.data.analysis.exif.gps.latitude'
+metatrace inspect photo.jpg --map-link  # OpenStreetMap URL for GPS coords
+metatrace inspect photo.jpg --sha512    # also compute SHA-512
+metatrace config show                   # effective configuration
 ```
 
 See [docs/USAGE.md](docs/USAGE.md) for a scenario walkthrough with
@@ -76,7 +89,7 @@ screenshots: a photo arrives as evidence — trace its story step by step.
 Per the master plan, each release is independently useful:
 
 - **v0.1** — Core framework, file identification, hashes, basic EXIF ✅
-- **v0.2** — Full EXIF + GPS normalization (DMS→decimal, validity checks)
+- **v0.2** — Full EXIF + GPS normalization (DMS→decimal, validity checks) ✅
 - **v0.3** — XMP/IPTC/ICC extraction + conflicting-field comparison
 - **v0.4** — Timestamp and device normalization, cross-field comparison
 - **v0.5** — Batch analysis, parallel processing, duplicate detection

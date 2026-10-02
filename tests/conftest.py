@@ -20,18 +20,27 @@ def build_tiff(
     endian: str = "<",
     ifd0: tuple = (),
     exif: tuple = (),
+    gps: tuple = (),
 ) -> bytes:
     """Build a minimal TIFF structure.
 
-    ``ifd0``/``exif`` are tuples of ``(tag, type, value)`` where type is
-    a TIFF type id (2=ASCII, 3=SHORT, 4=LONG, 5=RATIONAL) and value is a
-    str / int / tuple / (num, den) accordingly.
+    ``ifd0``/``exif``/``gps`` are tuples of ``(tag, type, value)`` where
+    type is a TIFF type id (1=BYTE, 2=ASCII, 3=SHORT, 4=LONG,
+    5=RATIONAL, 7=UNDEFINED) and value is a str / int / tuple /
+    (num, den) / bytes accordingly. ``gps`` builds a GPS sub-IFD linked
+    from IFD0 via the GPSIFDPointer tag.
     """
     e = endian
 
     def enc(tag: int, typ: int, value) -> tuple[int, int, int, bytes]:
         if typ == 2:
             raw = value.encode("ascii") + b"\x00"
+            count = len(raw)
+        elif typ in (1, 7):  # BYTE / UNDEFINED
+            if isinstance(value, (bytes, bytearray, tuple, list)):
+                raw = bytes(value)
+            else:
+                raw = bytes((value,))
             count = len(raw)
         elif typ == 3:
             v = value if isinstance(value, tuple) else (value,)
@@ -51,19 +60,26 @@ def build_tiff(
 
     ifd0_enc = [enc(*t) for t in ifd0]
     exif_enc = [enc(*t) for t in exif]
+    gps_enc = [enc(*t) for t in gps]
 
     has_exif_ifd = bool(exif_enc)
-    n0 = len(ifd0_enc) + (1 if has_exif_ifd else 0)
+    has_gps_ifd = bool(gps_enc)
+    n0 = len(ifd0_enc) + (1 if has_exif_ifd else 0) + (1 if has_gps_ifd else 0)
     ifd0_size = 2 + n0 * 12 + 4
     exif_off = 8 + ifd0_size
     exif_size = (2 + len(exif_enc) * 12 + 4) if has_exif_ifd else 0
-    data_off = 8 + ifd0_size + exif_size
+    gps_off = exif_off + exif_size
+    gps_size = (2 + len(gps_enc) * 12 + 4) if has_gps_ifd else 0
+    data_off = 8 + ifd0_size + exif_size + gps_size
 
     if has_exif_ifd:
         ifd0_enc.append((0x8769, 4, 1, struct.pack(e + "I", exif_off)))
+    if has_gps_ifd:
+        ifd0_enc.append((0x8825, 4, 1, struct.pack(e + "I", gps_off)))
 
     ifd0_bytes = struct.pack(e + "H", len(ifd0_enc))
     exif_bytes = struct.pack(e + "H", len(exif_enc)) if has_exif_ifd else b""
+    gps_bytes = struct.pack(e + "H", len(gps_enc)) if has_gps_ifd else b""
     blob_assignments: list[tuple[bytearray, int, bytes]] = []
 
     def append_entries(buf: bytearray, entries: list, base_data_off: list) -> None:
@@ -87,12 +103,18 @@ def build_tiff(
         append_entries(exif_buf, exif_enc, cursor)
         exif_buf += struct.pack(e + "I", 0)
 
+    gps_buf = bytearray(gps_bytes)
+    if has_gps_ifd:
+        append_entries(gps_buf, gps_enc, cursor)
+        gps_buf += struct.pack(e + "I", 0)
+
     tiff = bytearray()
     tiff += b"II" if e == "<" else b"MM"
     tiff += struct.pack(e + "H", 42)
     tiff += struct.pack(e + "I", 8)
     tiff += bytes(ifd0_buf)
     tiff += bytes(exif_buf)
+    tiff += bytes(gps_buf)
     # data blobs were assigned offsets starting at data_off; append in order
     for _buf, _pos, raw in blob_assignments:
         tiff += raw
@@ -209,6 +231,36 @@ def jpeg_with_exif(tmp_path):
     tiff = build_tiff(endian="<", ifd0=standard_ifd0(), exif=standard_exif())
     data = build_jpeg_with_exif(tiff, width=64, height=48)
     p = tmp_path / "photo.jpg"
+    p.write_bytes(data)
+    return p
+
+
+def standard_gps() -> tuple:
+    """GPS IFD: 49°20'15.2"N, 123°09'44.8"W, 42 m, bearing 090°T."""
+    return (
+        (0x0000, 1, (2, 3, 0, 0)),  # GPSVersionID
+        (0x0001, 2, "N"),
+        (0x0002, 5, ((49, 1), (20, 1), (152, 10))),  # 49°20'15.2"
+        (0x0003, 2, "W"),
+        (0x0004, 5, ((123, 1), (9, 1), (448, 10))),  # 123°09'44.8"
+        (0x0005, 1, 0),  # above sea level
+        (0x0006, 5, (42, 1)),
+        (0x0007, 5, ((18, 1), (42, 1), (7, 1))),  # 18:42:07
+        (0x000B, 5, (25, 10)),  # DOP 2.5
+        (0x000C, 2, "T"),
+        (0x000D, 5, (90, 1)),
+        (0x001B, 7, b"GPS\x00\x00\x00\x00\x00"),  # GPSProcessingMethod
+        (0x001D, 2, "2026:09:14"),
+    )
+
+
+@pytest.fixture()
+def jpeg_with_gps(tmp_path):
+    tiff = build_tiff(
+        endian="<", ifd0=standard_ifd0(), exif=standard_exif(), gps=standard_gps()
+    )
+    data = build_jpeg_with_exif(tiff, width=64, height=48)
+    p = tmp_path / "gps.jpg"
     p.write_bytes(data)
     return p
 

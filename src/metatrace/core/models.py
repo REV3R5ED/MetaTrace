@@ -32,6 +32,40 @@ class FileIdentity:
 
 
 @dataclass
+class GeoData:
+    """GPS normalization result: raw observed tags + normalized fields.
+
+    Coordinates record what the file's metadata *claims*. They never
+    prove where a photograph was taken — that distinction is enforced
+    in rendering and docs, not just here. ``validity_issues`` explains
+    every rejected or questionable value; nothing is silently dropped.
+    """
+
+    present: bool = False  # a GPS IFD was found and decoded
+    # Normalized, analyst-friendly fields (None when absent/unusable).
+    latitude: float | None = None  # decimal degrees, -90..90
+    longitude: float | None = None  # decimal degrees, -180..180
+    altitude_m: float | None = None  # signed meters (negative = below sea level)
+    bearing_deg: float | None = None  # 0..360
+    bearing_ref: str | None = None  # "true" | "magnetic"
+    gps_datetime_utc: str | None = None  # ISO-8601 UTC from GPSDateStamp+GPSTimeStamp
+    processing_method: str | None = None
+    dop: float | None = None  # dilution of precision
+    valid: bool = True
+    validity_issues: list[str] = field(default_factory=list)
+    # Raw observed GPS tag values: {tag_id: value} (bytes hex-encoded).
+    raw_tags: dict[int, Any] = field(default_factory=dict)
+    raw_tag_names: dict[int, str] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["raw_tags"] = {str(k): v for k, v in self.raw_tags.items()}
+        d["raw_tag_names"] = {str(k): v for k, v in self.raw_tag_names.items()}
+        return d
+
+
+@dataclass
 class ExifData:
     """EXIF extraction result: raw observed tags + normalized fields.
 
@@ -41,8 +75,10 @@ class ExifData:
     """
 
     present: bool = False  # an EXIF segment was found at all
-    has_gps_ifd: bool = False  # GPS IFD exists (decoded in v0.2)
+    has_gps_ifd: bool = False  # GPS IFD exists (decoded into ``gps`` in v0.2+)
     has_thumbnail_ifd: bool = False  # IFD1 exists
+    # GPS normalization (v0.2). Empty (present=False) when no GPS IFD.
+    gps: GeoData = field(default_factory=GeoData)
     # Normalized, analyst-friendly fields (None when absent/unparseable).
     make: str | None = None
     model: str | None = None
@@ -75,6 +111,8 @@ class ExifData:
         # JSON keys must be strings; keep raw tag ids readable.
         d["raw_tags"] = {str(k): v for k, v in self.raw_tags.items()}
         d["raw_tag_names"] = {str(k): v for k, v in self.raw_tag_names.items()}
+        # Nested GeoData carries its own raw tags; serialize with str keys.
+        d["gps"] = self.gps.to_dict()
         return d
 
 

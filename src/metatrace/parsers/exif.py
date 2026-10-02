@@ -9,16 +9,19 @@ Defensive by design — image input is untrusted:
 - malformed or truncated input produces recorded warnings, never
   an uncaught exception
 
-What is extracted (v0.1, "basic EXIF"):
+What is extracted (v0.2, "full EXIF"):
   IFD0: Make, Model, Orientation, Software, DateTime, ExifIFD/GPS pointers
   EXIF IFD: DateTimeOriginal, DateTimeDigitized, OffsetTime*, ISO,
             ExposureTime, FNumber, FocalLength, Flash, LensModel
-GPS values are NOT decoded in v0.1 (v0.2); only presence is recorded.
+  GPS IFD: decoded into a GeoData model (see metatrace.geo.coords):
+            latitude/longitude (DMS + refs), altitude, bearing,
+            GPS timestamp (UTC), DOP, processing method
 XMP/IPTC/ICC are v0.3. Thumbnails are v0.7.
 
 Raw observed tag values are preserved verbatim (bytes as hex) in
-``ExifData.raw_tags``; normalized analyst-friendly fields are derived
-alongside them and never merged.
+``ExifData.raw_tags`` (GPS tags separately in ``GeoData.raw_tags``);
+normalized analyst-friendly fields are derived alongside them and
+never merged.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import struct
 from typing import Any
 
 from metatrace.core.models import ExifData
+from metatrace.geo.coords import normalize_gps
 
 # TIFF field types: id -> size in bytes.
 _TYPE_SIZES = {
@@ -217,10 +221,12 @@ class _TiffParser:
 
     # -- top-level TIFF parse ----------------------------------------------
 
-    def parse(self) -> tuple[dict[int, Any], bool, bool]:
+    def parse(self) -> tuple[dict[int, Any], dict[int, Any], bool, bool]:
         """Parse TIFF data.
 
-        Returns (raw_tags, has_gps_ifd, has_thumbnail_ifd).
+        Returns (raw_tags, gps_tags, has_gps_ifd, has_thumbnail_ifd).
+        GPS tags stay in their own namespace — GPS tag ids overlap
+        numerically with other IFDs and must not be merged into raw_tags.
         """
         data = self.data
         if len(data) < 8:
@@ -248,13 +254,20 @@ class _TiffParser:
         elif isinstance(exif_ptr, int):
             self.warnings.append(f"EXIF IFD offset {exif_ptr} out of bounds")
 
-        has_gps = isinstance(raw.get(0x8825), int)
+        # GPS sub-IFD (decoded in v0.2+; kept in its own tag namespace).
+        gps_raw: dict[int, Any] = {}
+        gps_ptr = raw.get(0x8825)
+        has_gps = isinstance(gps_ptr, int)
+        if isinstance(gps_ptr, int) and self._in_bounds(gps_ptr, 2):
+            gps_raw = self.parse_ifd(gps_ptr)
+        elif has_gps:
+            self.warnings.append(f"GPS IFD offset {gps_ptr} out of bounds")
         # IFD1 (thumbnail) presence: nonzero next-IFD offset after IFD0.
         count = self._u16(ifd0_off)
         count = min(count, self.max_tags)
         nxt = self.next_ifd_offset(ifd0_off, count)
         has_thumbnail = bool(nxt)
-        return raw, has_gps, has_thumbnail
+        return raw, gps_raw, has_gps, has_thumbnail
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +417,7 @@ def extract_exif(
         else:
             tiff_data = data
         parser = _TiffParser(tiff_data, max_tags, max_value_bytes)
-        raw, has_gps, has_thumbnail = parser.parse()
+        raw, gps_raw, has_gps, has_thumbnail = parser.parse()
     except ExifError as exc:
         exif.warnings.append(str(exc))
         return exif
@@ -421,6 +434,10 @@ def extract_exif(
         exif.raw_tags[tag] = _json_safe(value)
         if tag in TAG_NAMES:
             exif.raw_tag_names[tag] = TAG_NAMES[tag]
+
+    # --- GPS normalization (v0.2) ---
+    exif.gps = normalize_gps(gps_raw)
+    exif.warnings.extend(exif.gps.warnings)
 
     # --- normalized fields (each independently optional) ---
     exif.make = _as_str(raw.get(0x010F))

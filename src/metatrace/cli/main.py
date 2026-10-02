@@ -1,4 +1,4 @@
-"""MetaTrace CLI: ``metatrace inspect <image>`` (v0.1).
+"""MetaTrace CLI: ``metatrace inspect <image>`` (v0.2).
 
 Every command returns a shared result envelope, renders human-readable
 text by default (``--json`` for automation), uses structured exit
@@ -26,6 +26,7 @@ from metatrace.core.hashing import HashingError, hash_file
 from metatrace.core.logging import audit_log, configure_logging, get_logger, utc_now_iso
 from metatrace.core.models import Analysis
 from metatrace.core.results import EXIT_ERROR, Finding, Result, exit_code_for
+from metatrace.geo import LOCATION_DISCLAIMER, osm_link
 from metatrace.image import identify as identify_mod
 from metatrace.parsers import exif as exif_mod
 
@@ -93,6 +94,18 @@ def analyze_image(path: str, cfg: AppConfig) -> tuple[Analysis, list[Finding]]:
                 severity="low",
                 reason=warning,
                 evidence=["parser continued; partial results kept"],
+            )
+        )
+    for issue in exif.gps.validity_issues:
+        findings.append(
+            Finding(
+                title="GPS metadata validity issue",
+                severity="low",
+                reason=issue,
+                evidence=[
+                    "value kept in raw GPS tags (--json); "
+                    "not used for normalized coordinates"
+                ],
             )
         )
 
@@ -163,7 +176,46 @@ def _fmt_exif_value(value: Any) -> str:
     return str(value)
 
 
-def render_human(result: Result) -> str:
+def _render_gps_section(gps: dict[str, Any], args: argparse.Namespace) -> list[str]:
+    """Render the GPS section. Coordinates are metadata claims, not proof."""
+    lines = [""]
+    if not gps["present"]:
+        lines.append("GPS:          not present")
+        return lines
+    lines.append("GPS:")
+    lines.append(f"  note         {LOCATION_DISCLAIMER}")
+    lat, lon = gps["latitude"], gps["longitude"]
+    if lat is not None and lon is not None:
+        lines.append(f"  coordinates  {lat:.6f}, {lon:.6f}")
+    else:
+        lines.append("  coordinates  not decodable from GPS tags")
+    if gps["altitude_m"] is not None:
+        lines.append(f"  altitude     {gps['altitude_m']:.1f} m")
+    if gps["bearing_deg"] is not None:
+        ref = f" ({gps['bearing_ref']} north)" if gps["bearing_ref"] else ""
+        lines.append(f"  bearing      {gps['bearing_deg']:.1f}\u00b0{ref}")
+    if gps["gps_datetime_utc"] is not None:
+        lines.append(f"  gps_time     {gps['gps_datetime_utc']}")
+    if gps["processing_method"] is not None:
+        lines.append(f"  method       {gps['processing_method']}")
+    if gps["dop"] is not None:
+        lines.append(f"  dop          {gps['dop']:.1f}")
+    if not gps["valid"]:
+        lines.append("  validity     INVALID:")
+        for issue in gps["validity_issues"]:
+            lines.append(f"    - {issue}")
+    if (
+        getattr(args, "map_link", False)
+        and lat is not None
+        and lon is not None
+        and gps["valid"]
+    ):
+        lines.append(f"  map          {osm_link(lat, lon)}")
+    lines.append(f"  raw tags:    {len(gps['raw_tags'])} captured")
+    return lines
+
+
+def render_human(result: Result, args: argparse.Namespace) -> str:
     lines: list[str] = []
     if result.summary:
         lines.append(result.summary)
@@ -245,10 +297,6 @@ def render_human(result: Result) -> str:
                 else None,
             ),
             (
-                "gps_ifd",
-                "present (decoded in v0.2)" if exif_d["has_gps_ifd"] else "absent",
-            ),
-            (
                 "thumbnail_ifd",
                 "present" if exif_d["has_thumbnail_ifd"] else "absent",
             ),
@@ -257,6 +305,8 @@ def render_human(result: Result) -> str:
             if value is not None:
                 lines.append(f"  {label:<18} {_fmt_exif_value(value)}")
         lines.append(f"  raw tags:      {len(exif_d['raw_tags'])} captured")
+
+    lines.extend(_render_gps_section(analysis_data["exif"]["gps"], args))
 
     if analysis_data["parser_warnings"]:
         lines.append("")
@@ -277,7 +327,7 @@ def render_human(result: Result) -> str:
 def render(result: Result, args: argparse.Namespace) -> str:
     if args.json:
         return json.dumps(result.to_dict(), indent=2)
-    return render_human(result)
+    return render_human(result, args)
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="metatrace",
         description="MetaTrace — image forensics and metadata analysis "
-        "(v0.1: core + file identification + basic EXIF). "
+        "(v0.2: core + file identification + full EXIF/GPS). "
         "Trace the story behind the image. MIT licensed.",
     )
     parser.add_argument(
@@ -318,7 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_inspect = sub.add_parser(
         "inspect",
-        help="identify a file, hash it, extract basic EXIF",
+        help="identify a file, hash it, extract EXIF + GPS",
         parents=[output_parent],
     )
     p_inspect.add_argument("image", help="path to the image file (read-only)")
@@ -326,6 +376,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--sha512",
         action="store_true",
         help="also compute SHA-512 (SHA-256 is always computed)",
+    )
+    p_inspect.add_argument(
+        "--map-link",
+        action="store_true",
+        help="print an OpenStreetMap URL for decoded GPS coordinates "
+        "(URL only, no network request)",
     )
     p_inspect.set_defaults(func=cmd_inspect)
 

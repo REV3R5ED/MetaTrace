@@ -5,7 +5,9 @@
 > the file can technically tell you — and separate what you *observe*
 > from what you *conclude*.
 >
-> Every command below is real output from MetaTrace v0.1.0.
+> Every command below is real output from MetaTrace v0.2.0
+> (screenshots 01–02 were captured under v0.1.0; the GPS step is new
+> in v0.2.0).
 
 ## Step 1 — Identify and hash the evidence
 
@@ -56,7 +58,35 @@ EXIF:         not present
 
 ![No metadata — graceful handling](images/02-no-metadata.png)
 
-## Step 4 — Feed the machines
+## Step 4 — Read the location claim (v0.2: GPS normalization)
+
+When the file carries a GPS IFD, MetaTrace decodes it into decimal
+coordinates, altitude, bearing, and a UTC timestamp — and validates
+everything. Degrees/minutes/seconds rationals become signed decimals;
+out-of-range values (latitude 95°, a 20000 m altitude) become explained
+findings, never silent drops:
+
+```
+$ metatrace inspect gps-photo.jpg --map-link
+```
+
+![GPS location decoded from metadata](images/03-gps-location.png)
+
+Observations from this file:
+
+- **Coordinates:** 49.337556, -123.162444 (from 49°20'15.2"N 123°09'44.8"W)
+- **Altitude:** 42.0 m above sea level · **Bearing:** 090° true north
+- **GPS time:** 2026-09-14T18:42:07Z — recorded alongside, not merged
+  with, the camera's `DateTimeOriginal` (2026-09-15T14:22:01, timezone
+  unknown). Two clocks, two claims; the cross-check is yours to make.
+- `--map-link` prints an OpenStreetMap URL for the coordinates. It only
+  *builds* the URL — no network request is made, ever.
+
+And the discipline, stated on every run: GPS coordinates record the
+location **stored in the file's metadata**; they do not prove where the
+photograph was taken. Metadata says; it never testifies.
+
+## Step 5 — Feed the machines
 
 Every inspection also emits a stable JSON envelope for case files,
 pipelines, and later correlation:
@@ -65,7 +95,7 @@ pipelines, and later correlation:
 $ metatrace inspect evidence-photo.jpg --json
 {
   "tool": "metatrace",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "command": "inspect",
   "timestamp": "2026-10-02T23:17:17Z",
   "status": "ok",
@@ -78,7 +108,7 @@ Exit codes: `0` = ok, `1` = findings/warnings, `2` = error.
 
 ## What's next
 
-v0.1 covers identification, hashing, and basic EXIF. The roadmap adds
-GPS normalization, XMP/IPTC/ICC parsing, timestamp analysis, batch
+v0.2 covers identification, hashing, full EXIF, and GPS normalization.
+The roadmap adds XMP/IPTC/ICC parsing, timestamp analysis, batch
 processing, the anomaly engine, thumbnail inspection, case management,
 and full reporting — each on the same evidence-first foundation.

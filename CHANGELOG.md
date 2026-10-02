@@ -5,6 +5,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-02
+
+### Added
+
+- Full EXIF + GPS normalization (plan Phase 4). The TIFF parser now
+  decodes the GPS sub-IFD (kept in its own tag namespace, never merged
+  with IFD0/EXIF tags); new `geo/coords.py` package converts DMS
+  rationals + N/S/E/W refs to decimal degrees, altitude (+/− sea level
+  via GPSAltitudeRef), bearing (true/magnetic, 0–360°), GPSDateStamp +
+  GPSTimeStamp to UTC ISO-8601, DOP, and processing method.
+- New `GeoData` model in `core/models.py` (`ExifData.gps`): normalized
+  fields alongside verbatim raw GPS tags; observed-vs-normalized
+  separation preserved. Validity checks (lat −90..90, lon −180..180,
+  sane altitude bounds) produce explained `validity_issues` — invalid
+  values are flagged and rejected from normalized output, never
+  silently dropped; they surface as "GPS metadata validity issue"
+  findings.
+- `metatrace inspect` GPS section: coordinates, altitude, bearing,
+  GPS time, method, DOP; `gps: not present` when absent. Every run
+  states the forensic rule: coordinates record the location stored in
+  the file's metadata; they do not prove where the photograph was
+  taken. EXIF `DateTimeOriginal` is kept as-is ("timezone unknown");
+  GPS time is recorded alongside it, never merged.
+- Optional `--map-link` flag: prints an OpenStreetMap URL for decoded
+  coordinates (URL construction only — no network request).
+- Docs: `docs/USAGE.md` gains a GPS scenario step with real output and
+  screenshot (`docs/images/03-gps-location.png`); README roadmap v0.2
+  checked off.
+- 55 new tests (all four hemispheres, ref variants, above/below sea
+  level, invalid coordinates, missing GPS IFD, big-endian TIFF,
+  `--map-link`); coverage 89%.
+
 ## [0.1.0] - 2026-10-02
 
 ### Added
