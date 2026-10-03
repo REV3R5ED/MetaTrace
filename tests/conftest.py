@@ -343,6 +343,135 @@ def build_jpeg_no_exif(width: int = 64, height: int = 48) -> bytes:
     return b"\xff\xd8" + sof0 + b"\xff\xd9"
 
 
+def build_jpeg_thumb_blob(
+    width: int = 160,
+    height: int = 120,
+    dqt_tables: int = 1,
+    with_dht: bool = True,
+) -> bytes:
+    """Minimal JPEG blob usable as an embedded thumbnail.
+
+    SOI + DQT (``dqt_tables`` 8-bit tables) + SOF0 (dimensions) +
+    optional DHT + SOS + EOI. Enough structure for SOF dimension
+    scans and encoder-signal extraction; decoders are not needed.
+    """
+    dqt_payload = b"".join(b"\x00" + bytes(64) for _ in range(max(dqt_tables, 1)))
+    dqt = b"\xff\xdb" + struct.pack(">H", 2 + len(dqt_payload)) + dqt_payload
+    sof0 = (
+        b"\xff\xc0\x00\x0b\x08"
+        + struct.pack(">HH", height, width)
+        + b"\x01\x01\x11\x00"
+    )
+    dht = b"\xff\xc4\x00\x1f" + bytes(29) if with_dht else b""
+    sos = b"\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00"
+    return b"\xff\xd8" + dqt + sof0 + dht + sos + b"\xff\xd9"
+
+
+def build_tiff_with_ifd1(
+    endian: str = "<",
+    ifd0: tuple = (),
+    ifd1: tuple = (),
+    thumb_blob: bytes = b"",
+    thumb_offset_tag: int = 0x0201,
+) -> bytes:
+    """TIFF with an IFD0 -> IFD1 chain for thumbnail tests.
+
+    ``ifd0``/``ifd1`` are ``(tag, type, value)`` tuples like
+    :func:`build_tiff`. ``thumb_blob`` is appended after IFD1 and the
+    entry for ``thumb_offset_tag`` (0x0201 JPEGInterchangeFormat or
+    0x0111 StripOffsets) in IFD1 is patched to point at it.
+    """
+    e = endian
+
+    def enc(tag: int, typ: int, value) -> tuple[int, int, int, bytes]:
+        if typ == 2:
+            raw = value.encode("ascii") + b"\x00"
+            count = len(raw)
+        elif typ in (1, 7):
+            if isinstance(value, (bytes, bytearray, tuple)):
+                raw = bytes(value)
+            else:
+                raw = bytes((value,))
+            count = len(raw)
+        elif typ == 3:
+            v = value if isinstance(value, tuple) else (value,)
+            raw = struct.pack(e + "H" * len(v), *v)
+            count = len(v)
+        elif typ == 4:
+            v = value if isinstance(value, tuple) else (value,)
+            raw = struct.pack(e + "I" * len(v), *v)
+            count = len(v)
+        else:  # pragma: no cover - test helper
+            raise ValueError(f"unsupported test type {typ}")
+        return (tag, typ, count, raw)
+
+    ifd0_enc = [enc(*t) for t in ifd0]
+    ifd1_enc = [enc(*t) for t in ifd1]
+    ifd0_size = 2 + len(ifd0_enc) * 12 + 4
+    ifd1_off = 8 + ifd0_size
+    ifd1_size = 2 + len(ifd1_enc) * 12 + 4
+    thumb_off = ifd1_off + ifd1_size
+
+    tiff = bytearray()
+    tiff += b"II" if e == "<" else b"MM"
+    tiff += struct.pack(e + "H", 42)
+    tiff += struct.pack(e + "I", 8)
+    tiff += struct.pack(e + "H", len(ifd0_enc))
+    for tag, typ, count, raw in ifd0_enc:
+        tiff += struct.pack(e + "HHI", tag, typ, count)
+        tiff += raw.ljust(4, b"\x00") if len(raw) <= 4 else struct.pack(e + "I", 0)
+    tiff += struct.pack(e + "I", ifd1_off)
+
+    ifd1_start = len(tiff)
+    assert ifd1_start == ifd1_off
+    tiff += struct.pack(e + "H", len(ifd1_enc))
+    patch_at: int | None = None
+    for tag, typ, count, raw in ifd1_enc:
+        tiff += struct.pack(e + "HHI", tag, typ, count)
+        if tag == thumb_offset_tag and typ == 4 and count == 1:
+            patch_at = len(tiff)
+            tiff += struct.pack(e + "I", 0)  # patched below
+        elif len(raw) <= 4:
+            tiff += raw.ljust(4, b"\x00")
+        else:  # pragma: no cover - test helper keeps thumb tags inline
+            raise ValueError("test IFD1 blobs must be inline-sized")
+    tiff += struct.pack(e + "I", 0)
+    assert len(tiff) == thumb_off, (len(tiff), thumb_off)
+    if patch_at is not None:
+        tiff[patch_at : patch_at + 4] = struct.pack(e + "I", thumb_off)
+    tiff += thumb_blob
+    return bytes(tiff)
+
+
+def build_jpeg_with_ifd1_thumbnail(
+    thumb_blob: bytes,
+    width: int = 64,
+    height: int = 48,
+    ifd0: tuple = (),
+) -> bytes:
+    """JPEG whose EXIF IFD1 carries a JPEG thumbnail blob.
+
+    Builds EXIF with IFD0 (+ optional tags) chained to an IFD1 with
+    JPEGInterchangeFormat/Length pointing at ``thumb_blob``.
+    """
+    tiff = build_tiff_with_ifd1(
+        ifd0=ifd0,
+        ifd1=(
+            (0x0201, 4, 0),  # patched to blob offset
+            (0x0202, 4, len(thumb_blob)),
+        ),
+        thumb_blob=thumb_blob,
+    )
+    app1 = b"Exif\x00\x00" + tiff
+    seg = b"\xff\xe1" + struct.pack(">H", len(app1) + 2) + app1
+    sof0 = (
+        b"\xff\xc0\x00\x0b\x08"
+        + struct.pack(">HH", height, width)
+        + b"\x01\x01\x11\x00"
+    )
+    return b"\xff\xd8" + seg + sof0 + b"\xff\xd9"
+
+
 def build_png(width: int = 8, height: int = 6) -> bytes:
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return (

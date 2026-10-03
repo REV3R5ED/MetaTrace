@@ -5,6 +5,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-03
+
+### Added
+
+- Embedded thumbnail/content analysis (plan Phase 9): new
+  `thumbnails/` package, pure stdlib, no pixel decoding.
+- Extraction: JPEG EXIF IFD1 JPEG blobs (`JPEGInterchangeFormat` /
+  `JPEGInterchangeFormatLength`) and uncompressed TIFF strips
+  (`StripOffsets` / `StripByteCounts`); standalone TIFF IFD1 the
+  same way. PNG/WebP report "no thumbnail mechanism", never an
+  error. All offsets bounds-checked; corrupt blobs become warnings,
+  never crashes.
+- Per thumbnail: byte size, SHA-256, dimensions (JPEG SOF marker
+  scan, or TIFF tags directly), format by magic bytes, coarse
+  encoder signals (DQT table count, DHT presence).
+- `metatrace thumbnails <image> [--extract] [--out-dir DIR]
+  [--force]`: lists thumbnails; `--extract` writes
+  `<evidence-id>_thumb<N>.<ext>` (sanitized names) and refuses to
+  overwrite without `--force`. The one write operation — everything
+  else is read-only. Human output + `--json`; exit codes 0/1/2.
+- Metadata-level thumbnail vs main-image comparison (aspect ratio,
+  scale factor, encoder signals) — each result states its own
+  limits; "weak signal", never a verdict.
+- Anomaly engine: the v0.6 `thumbnail-aspect-mismatch` rule is now
+  the fuller `thumbnail-mismatch` rule — stripped/unreadable
+  thumbnail (IFD1 claims one, none extractable) → medium; thumbnail
+  larger than the main image → medium; aspect differs → low;
+  encoder signals differ on both axes → low (explicitly weak).
+  The "what this does NOT prove" discipline is kept.
+- Batch integration: per-file `thumbnail_count`, summary
+  `files_with_thumbnails` / `total_thumbnails`, `thumbnails` CSV
+  column, per-file brief notes.
+- `metatrace inspect` shows a compact thumbnails section.
+
 ## [0.6.0] - 2026-10-03
 
 ### Added

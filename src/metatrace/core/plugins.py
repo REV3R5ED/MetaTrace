@@ -109,3 +109,11 @@ register(
         commands=["analyze", "batch"],
     )
 )
+register(
+    ModuleInfo(
+        name="thumbnails",
+        description="Embedded thumbnail extraction + metadata-level "
+        "thumbnail/main-image comparison, no pixel decoding (v0.7)",
+        commands=["thumbnails", "inspect", "analyze", "batch"],
+    )
+)

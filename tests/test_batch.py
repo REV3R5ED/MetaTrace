@@ -357,6 +357,7 @@ def test_batch_csv(photo_dir):
         "gps_latitude",
         "gps_longitude",
         "duplicate_group",
+        "thumbnails",
         "warnings",
         "error",
     }

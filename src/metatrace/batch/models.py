@@ -24,6 +24,7 @@ class BatchFileResult:
     error: str | None = None  # human reason when status == "error"
     skipped_reason: str | None = None  # human reason when status == "skipped"
     anomaly_count: int = 0  # v0.6 engine flag count (0 when skipped/error)
+    thumbnail_count: int = 0  # v0.7 embedded thumbnails (0 when skipped/error)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -70,6 +71,8 @@ class BatchSummary:
     files_with_conflicts: int = 0  # >=1 DIFFER comparison fact (descriptive)
     files_with_anomalies: int = 0  # >=1 v0.6 anomaly flag
     total_anomaly_flags: int = 0  # v0.6 flags across the batch
+    files_with_thumbnails: int = 0  # >=1 embedded thumbnail (v0.7)
+    total_thumbnails: int = 0  # embedded thumbnails across the batch (v0.7)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

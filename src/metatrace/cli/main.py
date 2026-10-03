@@ -41,6 +41,7 @@ from metatrace.parsers import exif as exif_mod
 from metatrace.parsers import icc as icc_mod
 from metatrace.parsers import iptc as iptc_mod
 from metatrace.parsers import xmp as xmp_mod
+from metatrace.thumbnails import extract_thumbnails
 
 log = get_logger()
 
@@ -182,6 +183,23 @@ def analyze_image(path: str, cfg: AppConfig) -> tuple[Analysis, list[Finding]]:
     # 5. v0.4 normalization: timestamps, device identity, descriptive
     # cross-source comparison, single-image timeline.
     findings.extend(build_normalization(analysis, fs_mtime))
+
+    # 6. v0.7 thumbnails: embedded preview extraction (JPEG/TIFF only;
+    # other formats report absent). Blob bytes are never retained —
+    # only sizes, hashes, dimensions and encoder signals.
+    thumbs = extract_thumbnails(
+        path, identity.format, max_tags=int(cfg["exif_max_tags"])
+    )
+    analysis.thumbnails = thumbs
+    for warning in thumbs.warnings:
+        findings.append(
+            Finding(
+                title="thumbnail parser warning",
+                severity="low",
+                reason=warning,
+                evidence=["parser continued; partial results kept"],
+            )
+        )
     return analysis, findings
 
 
@@ -292,7 +310,94 @@ def cmd_analyze(args: argparse.Namespace, cfg: AppConfig) -> Result:
     result.summary = (
         f"analyze {args.image}: {n} anomal{'y' if n == 1 else 'ies'} flagged"
         if n
-        else f"analyze {args.image}: no anomalies detected by the v0.6 rule set"
+        else f"analyze {args.image}: no anomalies detected by the v0.7 rule set"
+    )
+    return result
+
+
+def _render_thumbnails_section(analysis_data: dict[str, Any]) -> list[str]:
+    """v0.7: compact embedded-thumbnail listing for inspect output."""
+    lines: list[str] = []
+    thumbs = analysis_data.get("thumbnails") or {}
+    items = thumbs.get("thumbnails") or []
+    lines.append("")
+    if not items:
+        fmt = (analysis_data.get("identity") or {}).get("format")
+        if fmt in ("JPEG", "TIFF"):
+            lines.append("Thumbnails:   none embedded")
+        else:
+            lines.append(
+                "Thumbnails:   n/a (no embedded-thumbnail mechanism in "
+                f"{fmt or 'this'} format)"
+            )
+        return lines
+    lines.append(f"Thumbnails ({len(items)} embedded):")
+    for t in items:
+        dims = (
+            f"{t['width']}x{t['height']}"
+            if t.get("width") and t.get("height")
+            else "dimensions unknown"
+        )
+        lines.append(
+            f"  #{t['index']} {t['source']}: {dims} {t['format']}, "
+            f"{t['byte_size']} bytes, sha256 {t['sha256'][:16]}…"
+        )
+    return lines
+
+
+def cmd_thumbnails(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.7: list embedded thumbnails; --extract writes them to files."""
+    result = Result(command="thumbnails", target=args.image)
+    try:
+        analysis, findings = analyze_image(args.image, cfg)
+    except (FileNotFoundError, IsADirectoryError, ValueError, OSError) as exc:
+        result.fail(str(exc))
+        return result
+    thumbs = analysis.thumbnails
+    for finding in findings:
+        result.add_finding(finding)
+    extracted: list[str] = []
+    if args.extract:
+        from metatrace.thumbnails import extract_thumbnails_with_blobs, write_thumbnail
+
+        assert analysis.identity is not None
+        _data, blobs = extract_thumbnails_with_blobs(
+            args.image,
+            analysis.identity.format,
+            max_tags=int(cfg["exif_max_tags"]),
+        )
+        for info, blob in zip(_data.thumbnails, blobs, strict=True):
+            target, err = write_thumbnail(
+                blob,
+                args.out_dir,
+                analysis.evidence_id,
+                info.index,
+                info.format,
+                force=args.force,
+            )
+            if err is not None:
+                result.fail(err)
+                return result
+            assert target is not None
+            extracted.append(target)
+            audit_log(
+                {
+                    "command": "thumbnails.extract",
+                    "target": args.image,
+                    "output": target,
+                    "sha256": info.sha256,
+                }
+            )
+    result.data = {
+        "analysis": analysis.to_dict(),
+        "extracted": extracted,
+    }
+    n = len(thumbs.thumbnails)
+    result.summary = (
+        f"thumbnails {args.image}: {n} embedded thumbnail(s)"
+        + (f", {len(extracted)} extracted to {args.out_dir}" if extracted else "")
+        if n
+        else f"thumbnails {args.image}: none embedded"
     )
     return result
 
@@ -616,7 +721,11 @@ def _batch_file_brief(f: dict[str, Any]) -> str:
     warn_note = f" ({warns} warning{'s' if warns != 1 else ''})" if warns else ""
     anoms = f.get("anomaly_count") or 0
     anom_note = f" [{anoms} anomal{'y' if anoms == 1 else 'ies'}]" if anoms else ""
-    return f"  {name:<32} {ident['format']:<6} {device:<24} {day}{warn_note}{anom_note}"
+    nthumbs = f.get("thumbnail_count") or 0
+    thumb_word = "thumbnail" if nthumbs == 1 else "thumbnails"
+    thumb_note = f" [{nthumbs} {thumb_word}]" if nthumbs else ""
+    brief = f"  {name:<32} {ident['format']:<6} {device:<24} {day}"
+    return f"{brief}{warn_note}{anom_note}{thumb_note}"
 
 
 def _render_anomaly_section(
@@ -626,7 +735,7 @@ def _render_anomaly_section(
     lines: list[str] = [""]
     n = len(anomalies)
     if not n:
-        lines.append("Anomaly flags (0): no anomalies detected by the v0.6 rule set.")
+        lines.append("Anomaly flags (0): no anomalies detected by the v0.7 rule set.")
     else:
         lines.append(f"Anomaly flags ({n}):")
         for f in anomalies:
@@ -684,8 +793,14 @@ def _render_batch_human(batch: dict[str, Any]) -> list[str]:
     if s["total_anomaly_flags"]:
         lines.append(
             f"Anomaly flags: {s['total_anomaly_flags']} flag(s) across "
-            f"{s['files_with_anomalies']} file(s) (v0.6 rule set; run "
+            f"{s['files_with_anomalies']} file(s) (v0.7 rule set; run "
             "`metatrace analyze` per file for details)"
+        )
+    if s["total_thumbnails"]:
+        lines.append(
+            f"Thumbnails: {s['total_thumbnails']} embedded thumbnail(s) across "
+            f"{s['files_with_thumbnails']} file(s) (v0.7; run "
+            "`metatrace thumbnails` per file for details)"
         )
 
     def _table(title: str, counts: dict[str, int]) -> None:
@@ -780,6 +895,7 @@ def _render_batch_csv(batch: dict[str, Any]) -> str:
             "gps_latitude",
             "gps_longitude",
             "duplicate_group",
+            "thumbnails",
             "warnings",
             "error",
         ]
@@ -807,6 +923,7 @@ def _render_batch_csv(batch: dict[str, Any]) -> str:
                     "",
                     "",
                     dup_of.get(f["path"], ""),
+                    "",
                     "",
                     f.get("error") or f.get("skipped_reason") or "",
                 ]
@@ -840,6 +957,7 @@ def _render_batch_csv(batch: dict[str, Any]) -> str:
                 gps.get("latitude") if gps.get("latitude") is not None else "",
                 gps.get("longitude") if gps.get("longitude") is not None else "",
                 dup_of.get(f["path"], ""),
+                f.get("thumbnail_count") or "",
                 len(a.get("parser_warnings") or []),
                 "",
             ]
@@ -870,6 +988,19 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
     if result.command == "timeline":
         timeline = result.data.get("timeline") or []
         lines.extend(_render_timeline_section(timeline))
+        if result.findings:
+            lines.append("")
+            lines.append("Findings:")
+            for f in result.findings:
+                lines.append(f"  [{f.severity}] {f.title}")
+                if f.reason:
+                    lines.append(f"    {f.reason}")
+        return "\n".join(lines)
+
+    if result.command == "thumbnails":
+        lines.extend(_render_thumbnails_section(result.data.get("analysis") or {}))
+        for path in result.data.get("extracted") or []:
+            lines.append(f"  extracted: {path}")
         if result.findings:
             lines.append("")
             lines.append("Findings:")
@@ -986,6 +1117,7 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
     lines.extend(_render_xmp_section(analysis_data["xmp"]))
     lines.extend(_render_iptc_section(analysis_data["iptc"]))
     lines.extend(_render_icc_section(analysis_data["icc"]))
+    lines.extend(_render_thumbnails_section(analysis_data))
     lines.extend(_render_comparison_section(analysis_data))
 
     if analysis_data["parser_warnings"]:
@@ -1023,9 +1155,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="metatrace",
         description="MetaTrace — image forensics and metadata analysis "
-        "(v0.5: core + file identification + full EXIF/GPS + XMP/IPTC/ICC + "
+        "(v0.7: core + file identification + full EXIF/GPS + XMP/IPTC/ICC + "
         "timestamp/device normalization + cross-source comparison + timelines + "
-        "batch analysis). "
+        "batch analysis + anomaly engine + embedded thumbnails). "
         "Trace the story behind the image. MIT licensed.",
     )
     parser.add_argument(
@@ -1127,6 +1259,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="timestamp-conflict tolerance in seconds (default: 60)",
     )
     p_analyze.set_defaults(func=cmd_analyze)
+
+    p_thumbs = sub.add_parser(
+        "thumbnails",
+        help="list embedded thumbnails (JPEG EXIF IFD1 / TIFF IFD1); "
+        "--extract writes them to files",
+        parents=[output_parent],
+    )
+    p_thumbs.add_argument("image", help="path to the image file (read-only)")
+    p_thumbs.add_argument(
+        "--extract",
+        action="store_true",
+        help="write each thumbnail to <evidence-id>_thumb<N>.<ext> "
+        "(the only write operation; everything else is read-only)",
+    )
+    p_thumbs.add_argument(
+        "--out-dir",
+        default=".",
+        help="directory for --extract output (default: current directory)",
+    )
+    p_thumbs.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite existing files on --extract",
+    )
+    p_thumbs.set_defaults(func=cmd_thumbnails)
 
     p_config = sub.add_parser("config", help="configuration")
     config_sub = p_config.add_subparsers(dest="config_command", required=True)

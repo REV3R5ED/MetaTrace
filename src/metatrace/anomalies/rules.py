@@ -403,42 +403,135 @@ def rule_software_chain(analysis: Analysis) -> list[AnomalyFlag]:
     ]
 
 
-def rule_thumbnail_aspect(analysis: Analysis) -> list[AnomalyFlag]:
-    """Flag when the IFD1 thumbnail's aspect ratio differs from the image.
+def rule_thumbnail_mismatch(analysis: Analysis) -> list[AnomalyFlag]:
+    """Flag thumbnail/main-image inconsistencies (v0.7, fuller comparison).
 
-    Dimensions only — no pixel comparison (that is v0.7's job). Silent
-    when thumbnail dimensions are unavailable.
+    Replaces the v0.6 aspect-only check. Three sub-checks, all
+    metadata-level (no pixel decoding):
+    - IFD1 claims a thumbnail but none was extractable -> medium
+      ("stripped or unreadable thumbnail").
+    - A thumbnail larger than the main image, or with an aspect
+      differing beyond 5% -> medium / low respectively.
+    - JPEG encoder signals (DQT count + DHT presence) differ on both
+      axes between thumbnail and main image -> low, explicitly weak.
+    Silent when the format has no thumbnail mechanism or no IFD1.
     """
+    from metatrace.thumbnails.compare import compare_thumbnail
+
+    flags: list[AnomalyFlag] = []
     ident = analysis.identity
-    tw = analysis.exif.thumbnail_width
-    th = analysis.exif.thumbnail_height
-    if not (ident and ident.width and ident.height and tw and th):
+    thumbs = analysis.thumbnails
+    if not (ident and ident.width and ident.height):
         return []
-    a_main = ident.width / ident.height
-    a_thumb = tw / th
-    rel = abs(a_main - a_thumb) / a_main
-    if rel <= 0.05:
-        return []
-    return [
-        _flag(
-            rule_id="thumbnail-aspect-mismatch",
-            severity="low",
-            confidence=45,
-            title="embedded thumbnail aspect differs from main image",
-            body=(
-                f"main image is {ident.width}×{ident.height} (aspect "
-                f"{a_main:.3f}) but the embedded IFD1 thumbnail is {tw}×{th} "
-                f"(aspect {a_thumb:.3f}) — a {rel:.1%} aspect difference."
-            ),
-            values={
-                "main dimensions": f"{ident.width}x{ident.height}",
-                "thumbnail dimensions": f"{tw}x{th}",
-            },
-            sources=["image header", "EXIF IFD1"],
-            does_not_prove=(
-                "an aspect mismatch does not prove manipulation — cameras and "
-                "editors often generate thumbnails with different cropping "
-                "than the main image."
-            ),
+
+    if analysis.exif.has_thumbnail_ifd and not thumbs.present:
+        detail = "; ".join(thumbs.warnings) if thumbs.warnings else "no details"
+        flags.append(
+            _flag(
+                rule_id="thumbnail-mismatch",
+                severity="medium",
+                confidence=60,
+                title="IFD1 claims a thumbnail but none was extractable",
+                body=(
+                    "EXIF IFD1 exists, yet no thumbnail bytes could be "
+                    f"extracted ({detail}) — the thumbnail may have been "
+                    "stripped, or its offsets/lengths are corrupt."
+                ),
+                values={"has_thumbnail_ifd": True, "thumbnails_extracted": 0},
+                sources=["EXIF IFD1"],
+                does_not_prove=(
+                    "a missing thumbnail does not prove manipulation — "
+                    "many editors and converters drop embedded previews "
+                    "when re-saving."
+                ),
+            )
         )
-    ]
+        return flags
+
+    for thumb in thumbs.thumbnails:
+        comp = compare_thumbnail(
+            thumb,
+            ident.width,
+            ident.height,
+            thumbs.main_dqt_count,
+            thumbs.main_has_dht,
+        )
+        dims = (
+            f"{thumb.width}x{thumb.height}"
+            if thumb.width and thumb.height
+            else "dimensions unknown"
+        )
+        if comp["larger_than_main"]:
+            flags.append(
+                _flag(
+                    rule_id="thumbnail-mismatch",
+                    severity="medium",
+                    confidence=60,
+                    title="embedded thumbnail larger than the main image",
+                    body=(
+                        f"thumbnail #{thumb.index} ({thumb.source}) is {dims} "
+                        f"but the main image is {ident.width}x{ident.height} "
+                        "— a preview larger than its image is unusual."
+                    ),
+                    values={
+                        "main dimensions": f"{ident.width}x{ident.height}",
+                        f"thumbnail #{thumb.index} dimensions": dims,
+                        "thumbnail sha256": thumb.sha256[:16],
+                    },
+                    sources=["image header", thumb.source],
+                    does_not_prove=(
+                        "an oversized thumbnail does not prove manipulation — "
+                        "it can result from container reuse or sloppy "
+                        "metadata handling."
+                    ),
+                )
+            )
+        elif comp["aspect"] == "different":
+            flags.append(
+                _flag(
+                    rule_id="thumbnail-mismatch",
+                    severity="low",
+                    confidence=45,
+                    title="embedded thumbnail aspect differs from main image",
+                    body=(
+                        f"thumbnail #{thumb.index} ({thumb.source}): "
+                        f"{comp['aspect_detail']}."
+                    ),
+                    values={
+                        "main dimensions": f"{ident.width}x{ident.height}",
+                        f"thumbnail #{thumb.index} dimensions": dims,
+                    },
+                    sources=["image header", thumb.source],
+                    does_not_prove=(
+                        "an aspect mismatch does not prove manipulation — "
+                        "cameras and editors often generate thumbnails with "
+                        "different cropping than the main image."
+                    ),
+                )
+            )
+        if comp["encoder"] == "different":
+            flags.append(
+                _flag(
+                    rule_id="thumbnail-mismatch",
+                    severity="low",
+                    confidence=50,
+                    title="thumbnail encoder signals differ from main image",
+                    body=(
+                        f"thumbnail #{thumb.index} ({thumb.source}): "
+                        f"{comp['encoder_detail']}."
+                    ),
+                    values={
+                        "main DQT tables": thumbs.main_dqt_count,
+                        "main DHT present": thumbs.main_has_dht,
+                        f"thumbnail #{thumb.index} DQT tables": thumb.dqt_count,
+                        f"thumbnail #{thumb.index} DHT present": thumb.has_dht,
+                    },
+                    sources=["image header", thumb.source],
+                    does_not_prove=(
+                        "differing encoder signals do not prove the thumbnail "
+                        "came from another image — encoders vary DQT/DHT "
+                        "layout freely; this is a weak signal, not a verdict."
+                    ),
+                )
+            )
+    return flags

@@ -20,7 +20,7 @@ from metatrace.anomalies.rules import (
     rule_gps_timezone,
     rule_serial_conflict,
     rule_software_chain,
-    rule_thumbnail_aspect,
+    rule_thumbnail_mismatch,
     rule_timestamp_conflict,
 )
 from metatrace.batch.summary import build_report
@@ -41,6 +41,7 @@ from metatrace.normalize.timestamps import (
     normalize_exif_timestamp,
     normalize_xmp_timestamp,
 )
+from metatrace.thumbnails.models import ThumbnailInfo, ThumbnailsData
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -302,11 +303,38 @@ def test_product_name_strips_versions():
 
 
 # ---------------------------------------------------------------------------
-# Rule 5: thumbnail aspect
+# Rule: thumbnail mismatch (v0.7 replaces the v0.6 aspect-only check)
 # ---------------------------------------------------------------------------
 
 
-def _thumb_analysis(mw: int, mh: int, tw: int | None, th: int | None) -> Analysis:
+def _thumb_info(
+    width: int | None = 160,
+    height: int | None = 120,
+    dqt_count: int | None = 2,
+    has_dht: bool | None = True,
+    index: int = 0,
+) -> ThumbnailInfo:
+    return ThumbnailInfo(
+        index=index,
+        source="EXIF IFD1 (JPEG blob)",
+        byte_size=100,
+        sha256="ab" * 32,
+        width=width,
+        height=height,
+        format="JPEG",
+        dqt_count=dqt_count,
+        has_dht=has_dht,
+    )
+
+
+def _thumb_analysis(
+    mw: int,
+    mh: int,
+    thumbs: list[ThumbnailInfo] | None,
+    has_ifd1: bool = True,
+    main_dqt: int | None = 2,
+    main_dht: bool | None = True,
+) -> Analysis:
     ident = FileIdentity(
         path="x.jpg",
         filename="x.jpg",
@@ -316,29 +344,72 @@ def _thumb_analysis(mw: int, mh: int, tw: int | None, th: int | None) -> Analysi
         width=mw,
         height=mh,
     )
-    exif = ExifData(
-        present=True,
-        has_thumbnail_ifd=tw is not None,
-        thumbnail_width=tw,
-        thumbnail_height=th,
+    exif = ExifData(present=True, has_thumbnail_ifd=has_ifd1)
+    data = ThumbnailsData(
+        present=bool(thumbs),
+        thumbnails=thumbs or [],
+        main_dqt_count=main_dqt,
+        main_has_dht=main_dht,
     )
-    return _analysis(identity=ident, exif=exif)
+    return _analysis(identity=ident, exif=exif, thumbnails=data)
 
 
-def test_thumbnail_aspect_mismatch_flags():
-    flags = rule_thumbnail_aspect(_thumb_analysis(6000, 4000, 160, 120))
+def test_thumbnail_stripped_flags_medium():
+    # IFD1 claims a thumbnail but none was extractable.
+    flags = rule_thumbnail_mismatch(_thumb_analysis(6000, 4000, None, has_ifd1=True))
     assert len(flags) == 1
-    assert flags[0].rule_id == "thumbnail-aspect-mismatch"
+    assert flags[0].rule_id == "thumbnail-mismatch"
+    assert flags[0].severity == "medium"
+    assert "stripped" in flags[0].title or "extractable" in flags[0].title
+
+
+def test_thumbnail_aspect_mismatch_flags_low():
+    flags = rule_thumbnail_mismatch(_thumb_analysis(6000, 4000, [_thumb_info()]))
+    assert len(flags) == 1
+    assert flags[0].rule_id == "thumbnail-mismatch"
     assert flags[0].severity == "low"
     assert flags[0].confidence == 45
 
 
 def test_thumbnail_aspect_match_no_flag():
-    assert rule_thumbnail_aspect(_thumb_analysis(6000, 4000, 600, 400)) == []
+    flags = rule_thumbnail_mismatch(
+        _thumb_analysis(6000, 4000, [_thumb_info(width=600, height=400)])
+    )
+    assert flags == []
+
+
+def test_thumbnail_larger_than_main_flags_medium():
+    flags = rule_thumbnail_mismatch(
+        _thumb_analysis(640, 480, [_thumb_info(width=6000, height=4000)])
+    )
+    assert any(
+        f.severity == "medium" and "larger than the main image" in f.title
+        for f in flags
+    )
+
+
+def test_thumbnail_encoder_difference_flags_low_weak():
+    thumb = _thumb_info(width=600, height=400, dqt_count=1, has_dht=False)
+    flags = rule_thumbnail_mismatch(
+        _thumb_analysis(6000, 4000, [thumb], main_dqt=2, main_dht=True)
+    )
+    enc = [f for f in flags if "encoder signals" in f.title]
+    assert len(enc) == 1
+    assert enc[0].severity == "low"
+    assert "weak signal" in enc[0].explanation
 
 
 def test_thumbnail_absent_skips_silently():
-    assert rule_thumbnail_aspect(_thumb_analysis(6000, 4000, None, None)) == []
+    a = _thumb_analysis(6000, 4000, None, has_ifd1=False)
+    assert rule_thumbnail_mismatch(a) == []
+
+
+def test_thumbnail_no_main_dimensions_skips():
+    ident = FileIdentity(
+        path="x.jpg", filename="x.jpg", size_bytes=10, format="JPEG", mime="image/jpeg"
+    )
+    a = _analysis(identity=ident, thumbnails=ThumbnailsData())
+    assert rule_thumbnail_mismatch(a) == []
 
 
 # ---------------------------------------------------------------------------
@@ -376,9 +447,28 @@ def test_every_flag_ends_with_does_not_prove():
         ),
         exif=ExifData(
             present=True,
+            has_thumbnail_ifd=True,
             thumbnail_width=160,
             thumbnail_height=120,
             body_serial="AAA",
+        ),
+        thumbnails=ThumbnailsData(
+            present=True,
+            thumbnails=[
+                ThumbnailInfo(
+                    index=0,
+                    source="EXIF IFD1 (JPEG blob)",
+                    byte_size=100,
+                    sha256="ab" * 32,
+                    width=160,
+                    height=120,
+                    format="JPEG",
+                    dqt_count=2,
+                    has_dht=True,
+                )
+            ],
+            main_dqt_count=2,
+            main_has_dht=True,
         ),
         xmp=XmpData(
             exif_in_xmp={"http://ns.adobe.com/exif/1.0/aux/#SerialNumber": "BBB"}
@@ -504,7 +594,7 @@ def test_analyze_cli_no_flags_wording(tmp_path, capsys):
     )
     assert main(["analyze", img]) == 0
     out = capsys.readouterr().out
-    assert "no anomalies detected by the v0.6 rule set" in out
+    assert "no anomalies detected by the v0.7 rule set" in out
     assert "authentic" not in out.lower()
 
 

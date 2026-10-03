@@ -268,13 +268,51 @@ Observations from this run:
   flags, notes, and tolerance for pipelines. `metatrace batch`
   runs the engine per file and adds anomaly counts to the summary.
 
+## Step 10 — Open the embedded previews (v0.7: thumbnails)
+
+Many JPEGs carry a smaller copy of themselves inside the EXIF data —
+a preview thumbnail written by the camera. MetaTrace extracts it
+without decoding any pixels (the standard library has no JPEG
+decoder, and v0.7 adds no dependencies):
+
+```
+$ metatrace thumbnails demo_thumb.jpg
+```
+
+![Embedded thumbnail listing and the thumbnail-mismatch anomaly flag](images/08-thumbnails.png)
+
+Observations from this run:
+
+- **Listed, not decoded:** one embedded thumbnail — `EXIF IFD1
+  (JPEG blob)`, 320x240, SHA-256 recorded so the bytes can be
+  re-found. Dimensions come from a JPEG SOF marker scan of the
+  blob; TIFF thumbnails report dimensions from their tags
+  directly. PNG and WebP have no thumbnail mechanism and say so —
+  never an error.
+- **`--extract` is the one write operation:** `metatrace
+  thumbnails demo_thumb.jpg --extract` writes
+  `<evidence-id>_thumb0.jpg` (sanitized name) and refuses to
+  overwrite an existing file without `--force`. Everything else
+  MetaTrace does is read-only.
+- **Metadata-level comparison only:** the anomaly engine's
+  `thumbnail-mismatch` rule now replaces the v0.6 aspect-only
+  check. Here it fires low-confidence: the 320x240 (4:3) thumbnail
+  vs the 6000x4000 (3:2) main image differ by 11.1% in aspect. A
+  thumbnail *larger* than its main image, or an IFD1 that claims a
+  thumbnail with no extractable bytes ("stripped"), scores medium.
+  Encoder signals (DQT table count, DHT presence) are compared as
+  an explicitly *weak* signal — never a verdict.
+- **Batch counts them:** `metatrace batch` reports per-file
+  thumbnail counts plus `files_with_thumbnails` /
+  `total_thumbnails` in the summary and a `thumbnails` CSV column.
+
 ## What's next
 
-v0.6 covers identification, hashing, full EXIF, GPS normalization,
+v0.7 covers identification, hashing, full EXIF, GPS normalization,
 XMP/IPTC/ICC extraction, timestamp and device normalization,
 descriptive cross-source comparison, single-image timelines, batch
-analysis with duplicate detection and grouping, and the
-rule-based anomaly engine. The
-roadmap adds thumbnail
-inspection, case management, and full reporting — each on the same
+analysis with duplicate detection and grouping, the rule-based
+anomaly engine, and embedded thumbnail extraction with
+metadata-level comparison. The
+roadmap adds case management and full reporting — each on the same
 evidence-first foundation.

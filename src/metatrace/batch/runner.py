@@ -46,12 +46,17 @@ def _analyze_one(path: str, cfg: AppConfig, header_bytes: int) -> BatchFileResul
     # v0.6: per-file anomaly count for the batch summary (flags
     # themselves stay in `metatrace analyze` output).
     flags, _notes = detect_anomalies(analysis)
+    analysis_dict = analysis.to_dict()
+    # v0.7: per-file embedded-thumbnail count for the batch summary.
+    thumb_data = analysis_dict.get("thumbnails") or {}
+    thumb_count = len(thumb_data.get("thumbnails") or [])
     return BatchFileResult(
         path=path,
         status="ok",
-        analysis=analysis.to_dict(),
+        analysis=analysis_dict,
         findings=[f.to_dict() for f in findings],
         anomaly_count=len(flags),
+        thumbnail_count=thumb_count,
     )
 
 

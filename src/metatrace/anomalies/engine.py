@@ -13,7 +13,7 @@ from metatrace.anomalies.rules import (
     rule_gps_timezone,
     rule_serial_conflict,
     rule_software_chain,
-    rule_thumbnail_aspect,
+    rule_thumbnail_mismatch,
     rule_timestamp_conflict,
 )
 from metatrace.core.models import Analysis, AnomalyFlag
@@ -22,7 +22,7 @@ from metatrace.core.models import Analysis, AnomalyFlag
 def detect_anomalies(
     analysis: Analysis, tolerance_s: float = 60.0
 ) -> tuple[list[AnomalyFlag], list[str]]:
-    """Run the v0.6 rule set against *analysis*.
+    """Run the v0.7 rule set against *analysis*.
 
     *tolerance_s* is the timestamp-conflict tolerance in seconds.
     Never raises on partial analyses — missing pieces simply yield
@@ -37,5 +37,5 @@ def detect_anomalies(
     flags.extend(rule_device_mismatch(analysis))
     flags.extend(rule_serial_conflict(analysis))
     flags.extend(rule_software_chain(analysis))
-    flags.extend(rule_thumbnail_aspect(analysis))
+    flags.extend(rule_thumbnail_mismatch(analysis))
     return flags, notes

@@ -45,6 +45,9 @@ def build_summary(
         if result.anomaly_count:
             summary.files_with_anomalies += 1
             summary.total_anomaly_flags += result.anomaly_count
+        if result.thumbnail_count:
+            summary.files_with_thumbnails += 1
+            summary.total_thumbnails += result.thumbnail_count
     for bucket in groups.get("by_device", []):
         summary.by_device[bucket.display] = len(bucket.files)
     for bucket in groups.get("by_capture_day", []):

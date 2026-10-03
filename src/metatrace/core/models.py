@@ -289,6 +289,49 @@ class ComparisonFact:
 
 
 @dataclass
+class ThumbnailInfo:
+    """One embedded thumbnail, described without pixel decoding (v0.7).
+
+    Byte size + SHA-256 identify the bytes; dimensions come from a
+    JPEG SOF marker scan or TIFF tags (None when undeterminable);
+    format is by magic bytes; DQT count / DHT presence are coarse
+    encoder signals for "same encoder?" hints — explicitly weak.
+    """
+
+    index: int  # 0-based within this image
+    source: str  # e.g. "EXIF IFD1 (JPEG blob)", "TIFF IFD1 (TIFF strips)"
+    byte_size: int
+    sha256: str  # of the thumbnail bytes as stored
+    width: int | None = None
+    height: int | None = None
+    format: str = "UNKNOWN"  # "JPEG" | "TIFF" | "UNKNOWN"
+    dqt_count: int | None = None  # JPEG DQT tables seen (encoder signal)
+    has_dht: bool | None = None  # JPEG DHT segment seen (encoder signal)
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ThumbnailsData:
+    """Embedded-thumbnail extraction result for one image (v0.7)."""
+
+    present: bool = False  # at least one thumbnail was extracted
+    thumbnails: list[ThumbnailInfo] = field(default_factory=list)
+    # Main-image JPEG encoder signals (None for non-JPEG mains): lets the
+    # anomaly engine compare "same encoder?" without touching the file.
+    main_dqt_count: int | None = None
+    main_has_dht: bool | None = None
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["thumbnails"] = [t.to_dict() for t in self.thumbnails]
+        return d
+
+
+@dataclass
 class AnomalyFlag:
     """One rule-based consistency finding from the v0.6 anomaly engine.
 
@@ -332,6 +375,7 @@ class Analysis:
     device: DeviceIdentity | None = None  # v0.4
     comparison: list[ComparisonFact] = field(default_factory=list)  # v0.4
     timeline: list[NormalizedTimestamp] = field(default_factory=list)  # v0.4
+    thumbnails: ThumbnailsData = field(default_factory=ThumbnailsData)  # v0.7
     parser_warnings: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
 
@@ -343,4 +387,5 @@ class Analysis:
         d["device"] = self.device.to_dict() if self.device else None
         d["comparison"] = [c.to_dict() for c in self.comparison]
         d["timeline"] = [t.to_dict() for t in self.timeline]
+        d["thumbnails"] = self.thumbnails.to_dict()
         return d
