@@ -101,3 +101,11 @@ register(
         commands=["inspect", "timeline"],
     )
 )
+register(
+    ModuleInfo(
+        name="anomalies",
+        description="Consistency/anomaly engine: rule-based mismatch "
+        "detection with confidence + explanation per flag (v0.6)",
+        commands=["analyze", "batch"],
+    )
+)

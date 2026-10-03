@@ -5,6 +5,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-03
+
+### Added
+
+- Consistency/anomaly engine (plan Phase 8): new `anomalies/` package,
+  pure stdlib, deterministic rules — no ML, no network.
+- `metatrace analyze <image> [--tolerance SECONDS]`: five rules, each
+  emitting a flag with rule id, severity, 0–100 confidence, human
+  explanation, exact values compared, and sources involved:
+  - `timestamp-conflict` — EXIF DateTimeOriginal vs XMP CreateDate vs
+    IPTC DateCreated beyond tolerance (default 60s); confidence scales
+    with disagreement (minutes → low, days → high); timezone-naive
+    claims cap confidence at 60 and say why
+  - `gps-timezone-implausible` — GPS longitude vs capture UTC offset
+    (±2h tolerance); GPS with naive timestamps yields an informational
+    note, never a flag
+  - `device-identity-mismatch` — EXIF vs XMP make/model after v0.4
+    normalization
+  - `serial-number-conflict` — EXIF BodySerialNumber vs XMP
+    aux:SerialNumber (aux namespace now captured by the XMP parser)
+  - `software-chain-resave` — different editor products in EXIF
+    Software vs XMP CreatorTool (versions ignored)
+  - `thumbnail-aspect-mismatch` — IFD1 thumbnail dimensions vs main
+    image aspect (dimensions only; EXIF parser now reads IFD1
+    ImageWidth/ImageLength)
+- Every flag explanation ends with a "what this does NOT prove" line;
+  confidence reflects certainty about the observation, never intent.
+  No flags → "no anomalies detected by the v0.6 rule set" (never
+  "image is authentic").
+- High-severity flags become core findings; `--json` envelope carries
+  `anomalies`, `notes`, and `tolerance_s`.
+- Batch integration: `metatrace batch` runs the engine per file and
+  reports `files_with_anomalies` / `total_anomaly_flags` in the
+  summary (per-file `anomaly_count` in `--json` and the human
+  per-file lines).
+
 ## [0.5.0] - 2026-10-03
 
 ### Added

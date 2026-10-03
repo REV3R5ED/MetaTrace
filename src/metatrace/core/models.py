@@ -92,6 +92,8 @@ class ExifData:
     offset_time_digitized: str | None = None  # OffsetTimeDigitized (0x9012)
     orientation: int | None = None
     orientation_name: str | None = None
+    thumbnail_width: int | None = None  # IFD1 ImageWidth (0x0100), v0.6
+    thumbnail_height: int | None = None  # IFD1 ImageLength (0x0101), v0.6
     datetime_original: str | None = None  # ISO-8601, naive unless offset known
     datetime_original_raw: str | None = None
     datetime_digitized: str | None = None
@@ -284,6 +286,32 @@ class ComparisonFact:
         d = asdict(self)
         d["values"] = [v.to_dict() for v in self.values]
         return d
+
+
+@dataclass
+class AnomalyFlag:
+    """One rule-based consistency finding from the v0.6 anomaly engine.
+
+    ``confidence`` (0-100) measures how certain the detector is about
+    the *observation* (e.g. how far apart two timestamps are, how
+    cleanly two serials differ) — never about *intent*. A
+    high-confidence flag means "the metadata really does disagree
+    this much", not "this image was manipulated". ``explanation``
+    always ends with the ``does_not_prove`` line: what the
+    observation does NOT establish.
+    """
+
+    rule_id: str  # e.g. "timestamp-conflict"
+    severity: str  # "low" | "medium" | "high"
+    confidence: int  # 0-100
+    title: str
+    explanation: str  # human reasoning; ends with the does_not_prove line
+    values: dict[str, Any] = field(default_factory=dict)  # exact values compared
+    sources: list[str] = field(default_factory=list)
+    does_not_prove: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass

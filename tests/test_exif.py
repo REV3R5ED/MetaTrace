@@ -203,7 +203,7 @@ def test_unknown_field_type_warns():
     entry = struct.pack(e + "HHI", 0x010F, 99, 1) + b"\x00" * 4
     ifd = struct.pack(e + "H", 1) + entry + struct.pack(e + "I", 0)
     parser = _TiffParser(header + ifd, 512, 1024 * 1024)
-    raw, _, _, _ = parser.parse()
+    raw, *_ = parser.parse()
     assert 0x010F not in raw
     assert any("unknown TIFF field type" in w for w in parser.warnings)
 

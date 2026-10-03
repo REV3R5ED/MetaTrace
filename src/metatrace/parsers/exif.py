@@ -222,12 +222,57 @@ class _TiffParser:
             return None
         return self._u32(nxt)
 
+    def _read_ifd1_dimensions(self, ifd1_off: int) -> tuple[int | None, int | None]:
+        """Light IFD1 dimension read for the v0.6 thumbnail aspect check.
+
+        Returns (ImageWidth, ImageLength) or (None, None). Dimensions
+        only — no pixel data is touched (pixel comparison is v0.7's
+        job). Never warns: a missing or malformed IFD1 simply means
+        "no thumbnail dimensions".
+        """
+        try:
+            if not self._in_bounds(ifd1_off, 2):
+                return None, None
+            count = self._u16(ifd1_off)
+            if count > self.max_tags:
+                return None, None
+            width: int | None = None
+            height: int | None = None
+            for i in range(count):
+                entry = ifd1_off + 2 + i * 12
+                if not self._in_bounds(entry, 12):
+                    break
+                tag = self._u16(entry)
+                if tag not in (0x0100, 0x0101):  # ImageWidth / ImageLength
+                    continue
+                typ = self._u16(entry + 2)
+                num = self._u32(entry + 4)
+                if num != 1 or typ not in (3, 4):  # SHORT or LONG, single value
+                    continue
+                raw = self.data[entry + 8 : entry + 12]
+                value = (
+                    struct.unpack(self.endian + "H", raw[:2])[0]
+                    if typ == 3
+                    else struct.unpack(self.endian + "I", raw[:4])[0]
+                )
+                if value > 0:
+                    if tag == 0x0100:
+                        width = value
+                    else:
+                        height = value
+            return width, height
+        except (struct.error, IndexError, ValueError):
+            return None, None
+
     # -- top-level TIFF parse ----------------------------------------------
 
-    def parse(self) -> tuple[dict[int, Any], dict[int, Any], bool, bool]:
+    def parse(
+        self,
+    ) -> tuple[dict[int, Any], dict[int, Any], bool, bool, int | None, int | None]:
         """Parse TIFF data.
 
-        Returns (raw_tags, gps_tags, has_gps_ifd, has_thumbnail_ifd).
+        Returns (raw_tags, gps_tags, has_gps_ifd, has_thumbnail_ifd,
+        thumb_width, thumb_height).
         GPS tags stay in their own namespace — GPS tag ids overlap
         numerically with other IFDs and must not be merged into raw_tags.
         """
@@ -270,7 +315,8 @@ class _TiffParser:
         count = min(count, self.max_tags)
         nxt = self.next_ifd_offset(ifd0_off, count)
         has_thumbnail = bool(nxt)
-        return raw, gps_raw, has_gps, has_thumbnail
+        thumb_w, thumb_h = self._read_ifd1_dimensions(nxt) if nxt else (None, None)
+        return raw, gps_raw, has_gps, has_thumbnail, thumb_w, thumb_h
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +466,7 @@ def extract_exif(
         else:
             tiff_data = data
         parser = _TiffParser(tiff_data, max_tags, max_value_bytes)
-        raw, gps_raw, has_gps, has_thumbnail = parser.parse()
+        raw, gps_raw, has_gps, has_thumbnail, thumb_w, thumb_h = parser.parse()
     except ExifError as exc:
         exif.warnings.append(str(exc))
         return exif
@@ -432,6 +478,8 @@ def extract_exif(
     exif.present = True
     exif.has_gps_ifd = has_gps
     exif.has_thumbnail_ifd = has_thumbnail
+    exif.thumbnail_width = thumb_w
+    exif.thumbnail_height = thumb_h
     exif.warnings.extend(parser.warnings)
     for tag, value in raw.items():
         exif.raw_tags[tag] = _json_safe(value)

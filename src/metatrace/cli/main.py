@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from metatrace import __version__
+from metatrace.anomalies import detect_anomalies
 from metatrace.batch.grouping import LOCATION_GRID_NOTE, device_key_and_display
 from metatrace.batch.runner import default_jobs, run_batch, stderr_progress
 from metatrace.batch.scan import iter_candidate_files
@@ -251,6 +252,51 @@ def cmd_timeline(args: argparse.Namespace, cfg: AppConfig) -> Result:
     return result
 
 
+def cmd_analyze(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.6: full pipeline + anomaly engine on one image."""
+    result = Result(command="analyze", target=args.image)
+    tolerance = float(args.tolerance)
+    if tolerance < 0:
+        result.fail("--tolerance must be >= 0")
+        return result
+    try:
+        analysis, findings = analyze_image(args.image, cfg)
+    except (FileNotFoundError, IsADirectoryError, ValueError, OSError) as exc:
+        result.fail(str(exc))
+        return result
+    flags, notes = detect_anomalies(analysis, tolerance_s=tolerance)
+    result.data = {
+        "analysis": analysis.to_dict(),
+        "tolerance_s": tolerance,
+        "anomalies": [f.to_dict() for f in flags],
+        "notes": notes,
+    }
+    for finding in findings:
+        result.add_finding(finding)
+    # High-severity anomaly flags become core findings.
+    for flag in flags:
+        if flag.severity == "high":
+            result.add_finding(
+                Finding(
+                    title=f"anomaly: {flag.title}",
+                    severity="high",
+                    reason=flag.explanation,
+                    evidence=[
+                        f"rule: {flag.rule_id}",
+                        f"sources: {', '.join(flag.sources)}",
+                    ],
+                    confidence=flag.confidence,
+                )
+            )
+    n = len(flags)
+    result.summary = (
+        f"analyze {args.image}: {n} anomal{'y' if n == 1 else 'ies'} flagged"
+        if n
+        else f"analyze {args.image}: no anomalies detected by the v0.6 rule set"
+    )
+    return result
+
+
 def cmd_config_show(args: argparse.Namespace, cfg: AppConfig) -> Result:
     result = Result(command="config show")
     result.data = cfg.to_dict()
@@ -305,6 +351,11 @@ def cmd_batch(args: argparse.Namespace, cfg: AppConfig) -> Result:
     result.summary = (
         f"batch {args.directory}: {summary.analyzed} analyzed, "
         f"{summary.skipped} skipped, {summary.errors} errors{dup_note}"
+        + (
+            f", {summary.files_with_anomalies} file(s) with anomaly flags"
+            if summary.total_anomaly_flags
+            else ""
+        )
     )
 
     # Envelope findings: skips and per-file errors are always worth
@@ -563,7 +614,43 @@ def _batch_file_brief(f: dict[str, Any]) -> str:
             break
     warns = len(a.get("parser_warnings") or [])
     warn_note = f" ({warns} warning{'s' if warns != 1 else ''})" if warns else ""
-    return f"  {name:<32} {ident['format']:<6} {device:<24} {day}{warn_note}"
+    anoms = f.get("anomaly_count") or 0
+    anom_note = f" [{anoms} anomal{'y' if anoms == 1 else 'ies'}]" if anoms else ""
+    return f"  {name:<32} {ident['format']:<6} {device:<24} {day}{warn_note}{anom_note}"
+
+
+def _render_anomaly_section(
+    anomalies: list[dict[str, Any]], notes: list[str]
+) -> list[str]:
+    """Human-readable v0.6 anomaly flags + informational notes."""
+    lines: list[str] = [""]
+    n = len(anomalies)
+    if not n:
+        lines.append("Anomaly flags (0): no anomalies detected by the v0.6 rule set.")
+    else:
+        lines.append(f"Anomaly flags ({n}):")
+        for f in anomalies:
+            lines.append(
+                f"  [{f['severity']}] {f['rule_id']} (confidence {f['confidence']})"
+            )
+            lines.append(f"    {f['title']}")
+            for eline in f["explanation"].splitlines():
+                lines.append(f"    {eline}" if eline.strip() else "")
+            if f["values"]:
+                lines.append("    compared:")
+                for key, value in f["values"].items():
+                    lines.append(f"      {key}: {value!r}")
+            lines.append(f"    sources: {', '.join(f['sources'])}")
+    if notes:
+        lines.append("")
+        lines.append("Notes (informational — not flags):")
+        for note in notes:
+            lines.append(f"  - {note}")
+    lines.append("")
+    lines.append(
+        "Confidence reflects certainty about the observation, never about intent."
+    )
+    return lines
 
 
 def _render_batch_timeline_section(
@@ -594,6 +681,12 @@ def _render_batch_human(batch: dict[str, Any]) -> list[str]:
         f"Files: {s['total_files']} total — {s['analyzed']} analyzed, "
         f"{s['skipped']} skipped, {s['errors']} errors"
     )
+    if s["total_anomaly_flags"]:
+        lines.append(
+            f"Anomaly flags: {s['total_anomaly_flags']} flag(s) across "
+            f"{s['files_with_anomalies']} file(s) (v0.6 rule set; run "
+            "`metatrace analyze` per file for details)"
+        )
 
     def _table(title: str, counts: dict[str, int]) -> None:
         if not counts:
@@ -777,6 +870,22 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
     if result.command == "timeline":
         timeline = result.data.get("timeline") or []
         lines.extend(_render_timeline_section(timeline))
+        if result.findings:
+            lines.append("")
+            lines.append("Findings:")
+            for f in result.findings:
+                lines.append(f"  [{f.severity}] {f.title}")
+                if f.reason:
+                    lines.append(f"    {f.reason}")
+        return "\n".join(lines)
+
+    if result.command == "analyze":
+        lines.extend(
+            _render_anomaly_section(
+                result.data.get("anomalies") or [],
+                result.data.get("notes") or [],
+            )
+        )
         if result.findings:
             lines.append("")
             lines.append("Findings:")
@@ -1003,6 +1112,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit one CSV row per file instead of human-readable output",
     )
     p_batch.set_defaults(func=cmd_batch)
+
+    p_analyze = sub.add_parser(
+        "analyze",
+        help="run the v0.6 anomaly engine: rule-based consistency checks "
+        "with confidence and explanations per flag",
+        parents=[output_parent],
+    )
+    p_analyze.add_argument("image", help="path to the image file (read-only)")
+    p_analyze.add_argument(
+        "--tolerance",
+        type=float,
+        default=60.0,
+        help="timestamp-conflict tolerance in seconds (default: 60)",
+    )
+    p_analyze.set_defaults(func=cmd_analyze)
 
     p_config = sub.add_parser("config", help="configuration")
     config_sub = p_config.add_subparsers(dest="config_command", required=True)

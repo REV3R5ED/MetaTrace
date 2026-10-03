@@ -23,6 +23,7 @@ class BatchFileResult:
     findings: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None  # human reason when status == "error"
     skipped_reason: str | None = None  # human reason when status == "skipped"
+    anomaly_count: int = 0  # v0.6 engine flag count (0 when skipped/error)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -67,6 +68,8 @@ class BatchSummary:
     duplicate_files: int = 0  # files sitting in any duplicate group
     files_with_gps: int = 0
     files_with_conflicts: int = 0  # >=1 DIFFER comparison fact (descriptive)
+    files_with_anomalies: int = 0  # >=1 v0.6 anomaly flag
+    total_anomaly_flags: int = 0  # v0.6 flags across the batch
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

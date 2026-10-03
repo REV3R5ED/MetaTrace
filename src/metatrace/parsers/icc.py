@@ -154,7 +154,7 @@ def find_icc_in_tiff(tiff_data: bytes, max_tags: int) -> tuple[bytes | None, lis
 
     try:
         parser = _TiffParser(tiff_data, max_tags, 8 * 1024 * 1024)
-        raw, _, _, _ = parser.parse()
+        raw, *_ = parser.parse()
     except Exception as exc:  # ExifError and friends: not our problem here
         return None, [f"TIFF parse for ICC tag failed: {exc}"]
     value = raw.get(_ICC_TIFF_TAG)

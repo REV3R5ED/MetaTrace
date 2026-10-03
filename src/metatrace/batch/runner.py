@@ -14,6 +14,7 @@ import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from metatrace.anomalies import detect_anomalies
 from metatrace.batch.models import BatchFileResult
 from metatrace.batch.scan import is_supported_image
 from metatrace.core.config import AppConfig
@@ -42,11 +43,15 @@ def _analyze_one(path: str, cfg: AppConfig, header_bytes: int) -> BatchFileResul
             path=path, status="error", error=f"{type(exc).__name__}: {exc}"
         )
     assert analysis.identity is not None
+    # v0.6: per-file anomaly count for the batch summary (flags
+    # themselves stay in `metatrace analyze` output).
+    flags, _notes = detect_anomalies(analysis)
     return BatchFileResult(
         path=path,
         status="ok",
         analysis=analysis.to_dict(),
         findings=[f.to_dict() for f in findings],
+        anomaly_count=len(flags),
     )
 
 

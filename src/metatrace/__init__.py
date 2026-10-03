@@ -11,7 +11,7 @@ Later phases (anomaly engine, thumbnails, cases, reporting) plug
 into the models defined here.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __author__ = "Pouya Shini Karim"
 __license__ = "MIT"
 

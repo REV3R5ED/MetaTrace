@@ -46,6 +46,7 @@ _XMP_NS = "http://ns.adobe.com/xap/1.0/"
 _PHOTOSHOP_NS = "http://ns.adobe.com/photoshop/1.0/"
 _TIFF_NS = "http://ns.adobe.com/tiff/1.0/"
 _EXIF_NS = "http://ns.adobe.com/exif/1.0/"
+_AUX_NS = "http://ns.adobe.com/exif/1.0/aux/"
 _XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 
 
@@ -120,7 +121,7 @@ def find_xmp_in_tiff(tiff_data: bytes, max_tags: int) -> bytes | None:
 
     try:
         parser = _TiffParser(tiff_data, max_tags, 4 * 1024 * 1024)
-        raw, _, _, _ = parser.parse()
+        raw, *_ = parser.parse()
     except Exception:
         return None
     value = raw.get(_XMP_TIFF_TAG)
@@ -343,7 +344,7 @@ def extract_xmp(
         "date_created": _first_text(ps.get("DateCreated")),
     }
     exif_in_xmp: dict[str, Any] = {}
-    for ns in (_TIFF_NS, _EXIF_NS):
+    for ns in (_TIFF_NS, _EXIF_NS, _AUX_NS):
         for local, value in props.get(ns, {}).items():
             exif_in_xmp[f"{ns}#{local}"] = value
     xmp.exif_in_xmp = exif_in_xmp

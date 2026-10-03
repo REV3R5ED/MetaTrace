@@ -231,12 +231,50 @@ Observations from this run:
 A progress line (`N/M files`) goes to stderr on human runs and stays
 silent under `--json`/`--csv`, so pipelines never see it.
 
+## Step 9 — Judge the disagreements (v0.6: anomaly engine)
+
+Steps 1–8 record what the metadata *says*. The anomaly engine is the
+first part of MetaTrace that *judges* what it says — with rules you
+can read, confidence you can interpret, and an explicit statement of
+what each finding does not prove:
+
+```
+$ metatrace analyze case-1147.jpg
+```
+
+![Anomaly flags: timestamp conflict and device mismatch with confidence and disclaimers](images/07-anomalies.png)
+
+Observations from this run:
+
+- **Four flags, five rules:** the image trips `timestamp-conflict`
+  (EXIF says Sep 14, XMP says Sep 15), `device-identity-mismatch`
+  (Canon vs NIKON), `serial-number-conflict` (two sources name
+  different cameras — the only high-severity flag, so it becomes a
+  core finding), and `software-chain-resave` (Photoshop vs GIMP).
+  The thumbnail aspect check passes silently.
+- **Honest confidence:** the timestamp conflict scores 60, not 85 —
+  the EXIF claim is timezone-naive, so the engine says the gap may
+  be a timezone offset rather than a real time difference. A
+  three-day gap between two timezone-aware claims would score 85.
+- **Every flag ends with what it does NOT prove:** "a timestamp
+  conflict does not prove manipulation — camera clocks drift…".
+  Confidence measures certainty about the *observation*, never
+  about intent.
+- **No flags is a statement too:** a clean image prints "no
+  anomalies detected by the v0.6 rule set" — never "image is
+  authentic".
+- **Tunable strictness:** `--tolerance 300` widens the
+  timestamp-conflict window to five minutes; `--json` emits the
+  flags, notes, and tolerance for pipelines. `metatrace batch`
+  runs the engine per file and adds anomaly counts to the summary.
+
 ## What's next
 
-v0.5 covers identification, hashing, full EXIF, GPS normalization,
+v0.6 covers identification, hashing, full EXIF, GPS normalization,
 XMP/IPTC/ICC extraction, timestamp and device normalization,
-descriptive cross-source comparison, single-image timelines, and
-batch analysis with duplicate detection and grouping. The
-roadmap adds the anomaly engine, thumbnail
+descriptive cross-source comparison, single-image timelines, batch
+analysis with duplicate detection and grouping, and the
+rule-based anomaly engine. The
+roadmap adds thumbnail
 inspection, case management, and full reporting — each on the same
 evidence-first foundation.

@@ -10,6 +10,14 @@ The core forensic rule: **observed metadata is kept verbatim; normalized fields 
 
 MIT — see [LICENSE](LICENSE). Free for personal and commercial use.
 
+## v0.6 — what works today
+
+- **Anomaly engine**: `metatrace analyze <image>` runs five deterministic, rule-based consistency checks — capture-timestamp conflicts across EXIF/XMP/IPTC (with `--tolerance`, default 60s), GPS-longitude vs capture-timezone plausibility (±2h tolerance for borders/DST), device make/model mismatches after normalization, EXIF-vs-XMP camera serial conflicts, software-chain re-saves (product names compared, versions ignored), and IFD1 thumbnail aspect-ratio checks (dimensions only — pixel comparison is v0.7's job)
+- **Confidence + explanation per flag**: every flag carries severity (low/medium/high), a 0–100 confidence, the exact values compared, the sources involved, and a human explanation that always ends with what the observation does *not* prove. Confidence measures certainty about the *observation* (how far apart two timestamps are), never about *intent* — a high-confidence flag means "the metadata really disagrees this much", not "this image was manipulated"
+- **Honest edge handling**: timezone-naive timestamps cap timestamp-conflict confidence at 60 (the gap may be a timezone offset); GPS with naive timestamps yields an informational note ("cannot assess"), never a flag; no flags prints "no anomalies detected by the v0.6 rule set" — never "image is authentic"
+- **Batch integration**: `metatrace batch` runs the engine per file and reports anomaly counts in the summary (per-file counts in `--json`); high-severity flags become core findings
+- **CLI**: `metatrace analyze <image> [--tolerance SECONDS]` with human-readable output and `--json`; structured exit codes (0 ok / 1 findings / 2 error); audit logging of every invocation
+
 ## v0.5 — what works today
 
 - **Batch analysis**: `metatrace batch <dir>` scans a directory (opt-in `--recursive`) and runs the full pipeline on every recognized image — per-file results plus a batch summary. Files are identified by magic bytes, never extensions; non-images are skipped with a recorded reason, per-file failures become error records, the batch never crashes
@@ -148,7 +156,7 @@ Per the master plan, each release is independently useful:
 - **v0.3** — XMP/IPTC/ICC extraction + conflicting-field comparison ✅
 - **v0.4** — Timestamp and device normalization, cross-field comparison ✅
 - **v0.5** — Batch analysis, parallel processing, duplicate detection ✅
-- **v0.6** — Consistency/anomaly engine (confidence + explanation per flag)
+- **v0.6** — Consistency/anomaly engine (confidence + explanation per flag) ✅
 - **v0.7** — Embedded thumbnail/content analysis
 - **v0.8** — Case management, chain of custody, evidence manifests
 - **v0.9** — Search, timeline, geographic correlation

@@ -42,6 +42,9 @@ def build_summary(
             summary.files_with_gps += 1
         if has_conflicts(analysis):
             summary.files_with_conflicts += 1
+        if result.anomaly_count:
+            summary.files_with_anomalies += 1
+            summary.total_anomaly_flags += result.anomaly_count
     for bucket in groups.get("by_device", []):
         summary.by_device[bucket.display] = len(bucket.files)
     for bucket in groups.get("by_capture_day", []):
