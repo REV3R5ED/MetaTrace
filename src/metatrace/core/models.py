@@ -117,6 +117,64 @@ class ExifData:
 
 
 @dataclass
+class XmpData:
+    """XMP packet extraction: observed packet + normalized views.
+
+    The same logical field may exist in EXIF, XMP and IPTC. Those
+    values are reported per source, side by side — never merged or
+    silently preferred. Cross-source comparison is the v0.6 anomaly
+    engine's job.
+    """
+
+    present: bool = False  # an XMP packet was observed
+    raw_packet: str = ""  # decoded packet text (bounded; may be truncated)
+    packet_truncated: bool = False
+    namespaces: list[str] = field(default_factory=list)  # URIs seen
+    # Normalized views (None / empty when absent or unparseable).
+    dublin_core: dict[str, Any] = field(default_factory=dict)
+    xmp_basic: dict[str, Any] = field(default_factory=dict)
+    photoshop: dict[str, Any] = field(default_factory=dict)
+    exif_in_xmp: dict[str, Any] = field(default_factory=dict)
+    # Full flattening: {namespace URI: {local name: value}}.
+    raw_properties: dict[str, dict[str, Any]] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class IptcData:
+    """IPTC/IIM extraction: normalized datasets + verbatim record."""
+
+    present: bool = False  # an IPTC-NAA record was observed
+    # Normalized known datasets (None / [] when absent).
+    fields: dict[str, Any] = field(default_factory=dict)
+    # Every observed dataset, including unknown ones:
+    # [{record, dataset, name|None, data, data_hex}].
+    raw_datasets: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class IccData:
+    """Embedded ICC profile: header + tag directory (no color math)."""
+
+    present: bool = False  # a complete profile was observed
+    signature_valid: bool = False  # 'acsp' magic check
+    header: dict[str, Any] = field(default_factory=dict)
+    # Tag directory entries: [{signature, offset, size, readable}].
+    tags: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class Analysis:
     """Complete v0.1 analysis of one image file."""
 
@@ -127,6 +185,9 @@ class Analysis:
     identity: FileIdentity | None = None
     hashes: dict[str, str] = field(default_factory=dict)
     exif: ExifData = field(default_factory=ExifData)
+    xmp: XmpData = field(default_factory=XmpData)  # v0.3
+    iptc: IptcData = field(default_factory=IptcData)  # v0.3
+    icc: IccData = field(default_factory=IccData)  # v0.3
     parser_warnings: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
 

@@ -136,6 +136,197 @@ def build_jpeg_with_exif(
     return b"\xff\xd8" + app1 + sof0 + b"\xff\xd9"
 
 
+def build_jpeg_segment(marker: int, payload: bytes) -> bytes:
+    """One JPEG segment (marker byte + length + payload)."""
+    return b"\xff" + bytes((marker,)) + struct.pack(">H", len(payload) + 2) + payload
+
+
+def build_jpeg_with_segments(
+    segments: list, width: int = 64, height: int = 48
+) -> bytes:
+    """Minimal JPEG: SOI + given (marker, payload) segments + SOF0 + EOI."""
+    sof0 = (
+        b"\xff\xc0\x00\x0b\x08"
+        + struct.pack(">HH", height, width)
+        + b"\x01\x01\x11\x00"
+    )
+    body = b"".join(build_jpeg_segment(m, p) for m, p in segments)
+    return b"\xff\xd8" + body + sof0 + b"\xff\xd9"
+
+
+# ---------------------------------------------------------------------------
+# v0.3 builders: XMP / IPTC / ICC
+# ---------------------------------------------------------------------------
+
+
+def build_xmp_packet(
+    title: str = "Harbor at dusk",
+    creator: str = "Pouya Shini Karim",
+    create_date: str = "2026-09-14T18:42:07Z",
+    creator_tool: str = "TestSoft 2.0",
+    rating: str = "4",
+    credit: str = "Test Agency",
+    rights: str = "All rights reserved",
+    tiff_make: str = "TestMake",
+) -> bytes:
+    """A small but realistic XMP RDF packet (UTF-8)."""
+    lang = 'xml:lang="x-default"'
+    return f"""<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="MetaTraceTest">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+    xmlns:tiff="http://ns.adobe.com/tiff/1.0/"
+    xmp:CreatorTool="{creator_tool}"
+    xmp:CreateDate="{create_date}"
+    xmp:Rating="{rating}"
+    photoshop:Credit="{credit}"
+    tiff:Make="{tiff_make}">
+   <dc:title><rdf:Alt><rdf:li {lang}>{title}</rdf:li></rdf:Alt></dc:title>
+   <dc:creator><rdf:Seq><rdf:li>{creator}</rdf:li></rdf:Seq></dc:creator>
+   <dc:rights><rdf:Alt><rdf:li {lang}>{rights}</rdf:li></rdf:Alt></dc:rights>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>""".encode()
+
+
+def build_iptc_dataset(record: int, dataset: int, value: bytes) -> bytes:
+    """One IPTC dataset: 0x1C + record + dataset + u16 length + value."""
+    return b"\x1c" + bytes((record, dataset)) + struct.pack(">H", len(value)) + value
+
+
+def build_iptc_8bim(datasets: list, resource_id: int = 0x0404) -> bytes:
+    """A Photoshop 8BIM block carrying an IPTC-NAA record (APP13 payload)."""
+    record = b"".join(datasets)
+    # Empty Pascal name: length byte 0, padded to even (2 bytes total).
+    block = (
+        b"8BIM"
+        + struct.pack(">H", resource_id)
+        + b"\x00\x00"
+        + struct.pack(">I", len(record))
+        + record
+    )
+    if len(record) & 1:
+        block += b"\x00"
+    return b"Photoshop 3.0\x00" + block
+
+
+def standard_iptc_datasets() -> list:
+    return [
+        build_iptc_dataset(2, 0, struct.pack(">H", 4)),
+        build_iptc_dataset(2, 25, b"harbor"),
+        build_iptc_dataset(2, 25, b"dusk"),
+        build_iptc_dataset(2, 80, b"Pouya Shini Karim"),
+        build_iptc_dataset(2, 110, b"Test Agency"),
+        build_iptc_dataset(2, 116, b"(c) 2026 Test"),
+        build_iptc_dataset(2, 55, b"20260914"),
+        build_iptc_dataset(2, 60, b"184207+0000"),
+        build_iptc_dataset(2, 120, b"A harbor at dusk."),
+    ]
+
+
+def build_icc_profile(
+    device_class: bytes = b"mntr",
+    color_space: bytes = b"RGB ",
+    version: tuple = (2, 1, 0),
+    magic: bytes = b"acsp",
+    tag_sigs: tuple = (b"desc",),
+    size_override: int | None = None,
+) -> bytes:
+    """A minimal but structurally valid ICC profile."""
+    header = bytearray(128)
+    header[4:8] = b"TEST"
+    header[8] = version[0]
+    header[9] = ((version[1] & 0xF) << 4) | (version[2] & 0xF)
+    header[12:16] = device_class
+    header[16:20] = color_space
+    header[20:24] = b"XYZ "
+    struct.pack_into(">6H", header, 24, 2026, 9, 14, 18, 42, 7)
+    header[36:40] = magic
+    header[40:44] = b"APPL"
+    header[48:52] = b"ACME"
+    header[52:56] = b"M100"
+    struct.pack_into(">I", header, 64, 1)  # relative colorimetric
+    header[80:84] = b"mtst"
+    body = bytearray(header)
+    body += struct.pack(">I", len(tag_sigs))
+    data_off = 132 + 12 * len(tag_sigs)
+    for i, sig in enumerate(tag_sigs):
+        body += sig + struct.pack(">II", data_off + i * 16, 16)
+    for _ in tag_sigs:
+        body += b"\x00" * 16
+    if size_override is not None:
+        struct.pack_into(">I", body, 0, size_override)
+    else:
+        struct.pack_into(">I", body, 0, len(body))
+    return bytes(body)
+
+
+def build_icc_app2(profile: bytes, chunk_size: int = 60000) -> list:
+    """Split a profile into APP2 ICC_PROFILE chunks: [(0xE2, payload)]."""
+    chunks = [profile[i : i + chunk_size] for i in range(0, len(profile), chunk_size)]
+    total = len(chunks)
+    return [
+        (
+            0xE2,
+            b"ICC_PROFILE\x00" + bytes((seq + 1, total)) + chunk,
+        )
+        for seq, chunk in enumerate(chunks)
+    ]
+
+
+def build_png_with_chunks(extra_chunks: list) -> bytes:
+    """PNG with extra (type, data) chunks inserted before IEND."""
+    ihdr = struct.pack(">IIBBBBB", 8, 6, 8, 2, 0, 0, 0)
+    out = (
+        b"\x89PNG\r\n\x1a\n"
+        + struct.pack(">I", 13)
+        + b"IHDR"
+        + ihdr
+        + b"\x00\x00\x00\x00"
+    )
+    for ctype, cdata in extra_chunks:
+        out += struct.pack(">I", len(cdata)) + ctype + cdata + b"\x00\x00\x00\x00"
+    out += struct.pack(">I", 0) + b"IEND" + b"\x00\x00\x00\x00"
+    return out
+
+
+def build_itxt_chunk(keyword: bytes, text: bytes, compressed: bool = False) -> tuple:
+    """An iTXt chunk tuple (type, data)."""
+    import zlib as _zlib
+
+    flag = b"\x01" if compressed else b"\x00"
+    body = text if not compressed else _zlib.compress(text)
+    data = keyword + b"\x00" + flag + b"\x00" + b"\x00\x00" + body
+    return (b"iTXt", data)
+
+
+def build_iccp_chunk(profile: bytes, name: bytes = b"TestProfile") -> tuple:
+    """An iCCP chunk tuple (type, data) with a zlib-compressed profile."""
+    import zlib as _zlib
+
+    return (b"iCCP", name + b"\x00" + b"\x00" + _zlib.compress(profile))
+
+
+def build_webp_with_xmp(xmp_packet: bytes) -> bytes:
+    """Minimal extended WebP (VP8X + XMP chunk)."""
+    vp8x_data = (
+        b"\x00"
+        + b"\x00\x00\x00"
+        + (63).to_bytes(3, "little")
+        + (47).to_bytes(3, "little")
+    )
+    vp8x = b"VP8X" + struct.pack("<I", len(vp8x_data)) + vp8x_data
+    xmpc = b"XMP " + struct.pack("<I", len(xmp_packet)) + xmp_packet
+    if len(xmp_packet) & 1:
+        xmpc += b"\x00"
+    riff_size = 4 + len(vp8x) + len(xmpc)
+    return b"RIFF" + struct.pack("<I", riff_size) + b"WEBP" + vp8x + xmpc
+
+
 def build_jpeg_no_exif(width: int = 64, height: int = 48) -> bytes:
     sof0 = (
         b"\xff\xc0\x00\x0b\x08"

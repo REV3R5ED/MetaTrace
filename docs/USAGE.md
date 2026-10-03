@@ -86,7 +86,50 @@ And the discipline, stated on every run: GPS coordinates record the
 location **stored in the file's metadata**; they do not prove where the
 photograph was taken. Metadata says; it never testifies.
 
-## Step 5 — Feed the machines
+## Step 5 — Read the publisher's labels (v0.3: XMP/IPTC/ICC)
+
+A photo that has been through an editor, a newsroom, or a stock agency
+often carries more than the camera's EXIF. MetaTrace now reads the
+three other metadata standards that travel inside image files:
+
+- **XMP** — Adobe's RDF/XML packet (JPEG APP1, PNG iTXt, WebP XMP
+  chunk, TIFF tag 700): Dublin Core title/creator/rights, XMP Basic
+  dates and rating, Photoshop credit/source.
+- **IPTC/IIM** — the newsroom standard (JPEG APP13 Photoshop IRB):
+  caption, keywords, byline, credit, copyright, creation date/time.
+- **ICC** — the embedded color profile (JPEG APP2, PNG iCCP, TIFF tag
+  34675): header fields (device class, color space, version, creation
+  time, `acsp` signature check) plus the tag directory. No color math —
+  the directory says what the profile claims to carry, which is what
+  forensics needs first.
+
+```
+$ metatrace inspect published-photo.jpg
+```
+
+![XMP, IPTC and ICC sections with per-source dates](images/04-xmp-iptc-icc.png)
+
+Observations from this file:
+
+- **XMP:** title "Harbor at dusk", creator "Pouya Shini Karim",
+  `xmp:CreateDate` 2026-09-14T18:42:07Z, rating 4, credit "Test Agency".
+  The raw packet (912 chars) is kept verbatim in `--json`.
+- **IPTC:** caption "A harbor at dusk.", keywords harbor/dusk, byline
+  "Pouya Shini Karim", `DateCreated` 2026-09-14. All 9 datasets kept
+  raw, including ones MetaTrace doesn't normalize by name.
+- **ICC:** valid `acsp` signature, display-device profile, RGB → XYZ,
+  version 2.1.0, one tag in the directory.
+- **Three dates, three claims:** EXIF says 2026-09-15T14:22:01, XMP says
+  2026-09-14T18:42:07Z, IPTC says 2026-09-14. MetaTrace shows them side
+  by side and **never merges them** — deciding whether they agree is
+  the v0.6 anomaly engine's job, not this parser's.
+
+Defensive as ever: malformed XMP XML becomes a warning (the packet
+still counts as observed), truncated IPTC records keep partial
+results, and an ICC profile that fails the `acsp` check is reported
+with `signature_valid: false` plus a medium-severity finding.
+
+## Step 6 — Feed the machines
 
 Every inspection also emits a stable JSON envelope for case files,
 pipelines, and later correlation:
@@ -95,11 +138,11 @@ pipelines, and later correlation:
 $ metatrace inspect evidence-photo.jpg --json
 {
   "tool": "metatrace",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "command": "inspect",
   "timestamp": "2026-10-02T23:17:17Z",
   "status": "ok",
-  "data": { "identity": {...}, "exif": {"normalized": {...}, "raw": {...}} },
+  "data": { "identity": {...}, "exif": {...}, "xmp": {...}, "iptc": {...}, "icc": {...} },
   ...
 }
 ```
@@ -108,7 +151,8 @@ Exit codes: `0` = ok, `1` = findings/warnings, `2` = error.
 
 ## What's next
 
-v0.2 covers identification, hashing, full EXIF, and GPS normalization.
-The roadmap adds XMP/IPTC/ICC parsing, timestamp analysis, batch
-processing, the anomaly engine, thumbnail inspection, case management,
-and full reporting — each on the same evidence-first foundation.
+v0.3 covers identification, hashing, full EXIF, GPS normalization, and
+XMP/IPTC/ICC extraction with per-source date display. The roadmap adds
+timestamp analysis, batch processing, the anomaly engine, thumbnail
+inspection, case management, and full reporting — each on the same
+evidence-first foundation.

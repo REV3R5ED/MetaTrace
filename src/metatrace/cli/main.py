@@ -1,4 +1,4 @@
-"""MetaTrace CLI: ``metatrace inspect <image>`` (v0.2).
+"""MetaTrace CLI: ``metatrace inspect <image>`` (v0.3).
 
 Every command returns a shared result envelope, renders human-readable
 text by default (``--json`` for automation), uses structured exit
@@ -29,6 +29,9 @@ from metatrace.core.results import EXIT_ERROR, Finding, Result, exit_code_for
 from metatrace.geo import LOCATION_DISCLAIMER, osm_link
 from metatrace.image import identify as identify_mod
 from metatrace.parsers import exif as exif_mod
+from metatrace.parsers import icc as icc_mod
+from metatrace.parsers import iptc as iptc_mod
+from metatrace.parsers import xmp as xmp_mod
 
 log = get_logger()
 
@@ -39,7 +42,11 @@ log = get_logger()
 
 
 def analyze_image(path: str, cfg: AppConfig) -> tuple[Analysis, list[Finding]]:
-    """Run the v0.1 pipeline: hash -> identify -> EXIF. Read-only."""
+    """Run the v0.3 pipeline: hash -> identify -> EXIF -> XMP/IPTC/ICC.
+
+    Read-only. Each parser is defensive: failures become warnings and
+    findings, never exceptions.
+    """
     findings: list[Finding] = []
     max_size = int(cfg["max_file_size_bytes"])
     header_bytes = int(cfg["identify_header_bytes"])
@@ -109,6 +116,42 @@ def analyze_image(path: str, cfg: AppConfig) -> tuple[Analysis, list[Finding]]:
             )
         )
 
+    # 4. XMP / IPTC / ICC (v0.3). Each extract() is defensive and never
+    # raises; warnings become findings so nothing is silent.
+    xmp = xmp_mod.extract_xmp(
+        path,
+        identity.format,
+        max_tags=int(cfg["exif_max_tags"]),
+        max_packet_bytes=int(cfg["xmp_max_packet_bytes"]),
+    )
+    iptc = iptc_mod.extract_iptc(path, identity.format)
+    icc = icc_mod.extract_icc(
+        path,
+        identity.format,
+        max_tags=int(cfg["exif_max_tags"]),
+        max_profile_bytes=int(cfg["icc_max_profile_bytes"]),
+    )
+    for label, parsed in (("XMP", xmp), ("IPTC", iptc), ("ICC", icc)):
+        for warning in parsed.warnings:
+            findings.append(
+                Finding(
+                    title=f"{label} parser warning",
+                    severity="low",
+                    reason=warning,
+                    evidence=["parser continued; partial results kept"],
+                )
+            )
+    if icc.present and not icc.signature_valid:
+        findings.append(
+            Finding(
+                title="ICC profile signature invalid",
+                severity="medium",
+                reason="embedded ICC profile fails the 'acsp' magic check; "
+                "its color claims are not trustworthy",
+                evidence=["header and tag directory still reported in --json"],
+            )
+        )
+
     analysis = Analysis(
         evidence_id="MT-" + hashes["sha256"][:16],
         tool_version=__version__,
@@ -116,7 +159,13 @@ def analyze_image(path: str, cfg: AppConfig) -> tuple[Analysis, list[Finding]]:
         identity=identity,
         hashes=hashes,
         exif=exif,
-        parser_warnings=list(exif.warnings),
+        xmp=xmp,
+        iptc=iptc,
+        icc=icc,
+        parser_warnings=list(exif.warnings)
+        + list(xmp.warnings)
+        + list(iptc.warnings)
+        + list(icc.warnings),
     )
     return analysis, findings
 
@@ -149,9 +198,19 @@ def cmd_inspect(args: argparse.Namespace, cfg: AppConfig) -> Result:
         if analysis.exif.present
         else ("no EXIF data" if ident.format in ("JPEG", "TIFF") else "EXIF n/a")
     )
+    extra_kinds = [
+        name
+        for name, flag in (
+            ("XMP", analysis.xmp.present),
+            ("IPTC", analysis.iptc.present),
+            ("ICC", analysis.icc.present),
+        )
+        if flag
+    ]
+    meta_note = exif_note + (" + " + " + ".join(extra_kinds) if extra_kinds else "")
     result.summary = (
         f"{ident.filename}: {ident.format} {dims}, "
-        f"{ident.size_bytes} bytes, {exif_note}"
+        f"{ident.size_bytes} bytes, {meta_note}"
     )
     return result
 
@@ -212,6 +271,133 @@ def _render_gps_section(gps: dict[str, Any], args: argparse.Namespace) -> list[s
     ):
         lines.append(f"  map          {osm_link(lat, lon)}")
     lines.append(f"  raw tags:    {len(gps['raw_tags'])} captured")
+    return lines
+
+
+def _render_xmp_section(xmp: dict[str, Any]) -> list[str]:
+    lines = [""]
+    if not xmp["present"]:
+        lines.append("XMP:          not present")
+        return lines
+    lines.append("XMP (normalized | raw packet + properties kept in --json):")
+    dc = xmp["dublin_core"]
+    basic = xmp["xmp_basic"]
+    ps = xmp["photoshop"]
+    for label, value in (
+        ("dc:title", dc.get("title")),
+        ("dc:creator", dc.get("creator")),
+        ("dc:rights", dc.get("rights")),
+        ("xmp:CreateDate", basic.get("create_date")),
+        ("xmp:ModifyDate", basic.get("modify_date")),
+        ("xmp:CreatorTool", basic.get("creator_tool")),
+        ("xmp:Rating", basic.get("rating")),
+        ("photoshop:Credit", ps.get("credit")),
+        ("photoshop:Source", ps.get("source")),
+    ):
+        if value is not None:
+            lines.append(f"  {label:<18} {_fmt_exif_value(value)}")
+    lines.append(f"  namespaces:    {len(xmp['namespaces'])} seen")
+    raw_props = sum(len(v) for v in xmp["raw_properties"].values())
+    lines.append(f"  raw props:     {raw_props} captured")
+    size_note = f"{len(xmp['raw_packet'])} chars"
+    if xmp["packet_truncated"]:
+        size_note += " (truncated)"
+    lines.append(f"  raw packet:    {size_note}")
+    return lines
+
+
+def _render_iptc_section(iptc: dict[str, Any]) -> list[str]:
+    lines = [""]
+    if not iptc["present"]:
+        lines.append("IPTC:         not present")
+        return lines
+    lines.append("IPTC/IIM (normalized | raw datasets kept in --json):")
+    fields = iptc["fields"]
+    for label, key in (
+        ("object_name", "object_name"),
+        ("headline", "headline"),
+        ("caption", "caption"),
+        ("keywords", "keywords"),
+        ("byline", "byline"),
+        ("credit", "credit"),
+        ("source", "source"),
+        ("copyright", "copyright_notice"),
+        ("city", "city"),
+        ("country", "country"),
+        ("date_created", "date_created"),
+        ("time_created", "time_created"),
+    ):
+        value = fields.get(key)
+        if value is not None and value != []:
+            lines.append(f"  {label:<18} {_fmt_exif_value(value)}")
+    lines.append(f"  raw datasets:  {len(iptc['raw_datasets'])} captured")
+    return lines
+
+
+def _render_icc_section(icc: dict[str, Any]) -> list[str]:
+    lines = [""]
+    if not icc["present"]:
+        lines.append("ICC:          not present")
+        return lines
+    lines.append("ICC profile (header + tag directory; no color math):")
+    header = icc["header"]
+    sig = "valid" if icc["signature_valid"] else "INVALID"
+    for label, value in (
+        ("signature", f"'acsp' check: {sig}"),
+        ("device_class", header.get("device_class_name")),
+        ("color_space", header.get("color_space")),
+        ("pcs", header.get("pcs")),
+        ("version", header.get("version")),
+        ("created", header.get("created")),
+        ("rendering_intent", header.get("rendering_intent_name")),
+        ("manufacturer", header.get("device_manufacturer")),
+        ("model", header.get("device_model")),
+    ):
+        if value is not None:
+            lines.append(f"  {label:<18} {_fmt_exif_value(value)}")
+    lines.append(f"  tags:          {len(icc['tags'])} in directory")
+    return lines
+
+
+def _render_dates_section(analysis_data: dict[str, Any]) -> list[str]:
+    """Same logical field, multiple sources — side by side, never merged.
+
+    Cross-source comparison (agreement/conflict) is the v0.6 anomaly
+    engine's job. This section only places the claims next to each
+    other so an analyst can see them together.
+    """
+    rows: list[tuple[str, str | None]] = []
+    exif_d = analysis_data["exif"]
+    if exif_d["datetime_original"] or exif_d["datetime_original_raw"]:
+        rows.append(
+            (
+                "EXIF DateTimeOriginal",
+                exif_d["datetime_original"] or exif_d["datetime_original_raw"],
+            )
+        )
+    xmp_basic = analysis_data["xmp"]["xmp_basic"]
+    if xmp_basic.get("create_date"):
+        rows.append(("XMP xmp:CreateDate", xmp_basic["create_date"]))
+    if xmp_basic.get("modify_date"):
+        rows.append(("XMP xmp:ModifyDate", xmp_basic["modify_date"]))
+    iptc_fields = analysis_data["iptc"]["fields"]
+    if iptc_fields.get("date_created") or iptc_fields.get("date_created_raw"):
+        rows.append(
+            (
+                "IPTC DateCreated",
+                iptc_fields["date_created"] or iptc_fields["date_created_raw"],
+            )
+        )
+    if not rows:
+        return []
+    lines = [""]
+    lines.append("Capture dates claimed per source (side by side, never merged):")
+    for label, value in rows:
+        lines.append(f"  {label:<22} {_fmt_exif_value(value)}")
+    lines.append(
+        "  note: cross-source comparison is the v0.6 anomaly engine's job; "
+        "metatrace records each claim independently."
+    )
     return lines
 
 
@@ -307,6 +493,10 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
         lines.append(f"  raw tags:      {len(exif_d['raw_tags'])} captured")
 
     lines.extend(_render_gps_section(analysis_data["exif"]["gps"], args))
+    lines.extend(_render_xmp_section(analysis_data["xmp"]))
+    lines.extend(_render_iptc_section(analysis_data["iptc"]))
+    lines.extend(_render_icc_section(analysis_data["icc"]))
+    lines.extend(_render_dates_section(analysis_data))
 
     if analysis_data["parser_warnings"]:
         lines.append("")
@@ -339,7 +529,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="metatrace",
         description="MetaTrace — image forensics and metadata analysis "
-        "(v0.2: core + file identification + full EXIF/GPS). "
+        "(v0.3: core + file identification + full EXIF/GPS + XMP/IPTC/ICC). "
         "Trace the story behind the image. MIT licensed.",
     )
     parser.add_argument(
@@ -368,7 +558,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_inspect = sub.add_parser(
         "inspect",
-        help="identify a file, hash it, extract EXIF + GPS",
+        help="identify a file, hash it, extract EXIF + GPS + XMP/IPTC/ICC",
         parents=[output_parent],
     )
     p_inspect.add_argument("image", help="path to the image file (read-only)")

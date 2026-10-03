@@ -89,7 +89,7 @@ register(
 register(
     ModuleInfo(
         name="parsers",
-        description="Metadata parsers (v0.1: EXIF; XMP/IPTC/ICC in v0.3)",
+        description="Metadata parsers (v0.3: EXIF, GPS, XMP/IPTC/ICC)",
         commands=["inspect"],
     )
 )

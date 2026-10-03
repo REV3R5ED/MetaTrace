@@ -2,14 +2,14 @@
 
 Trace the story behind the image.
 
-v0.2: core framework (config, models, hashing, logging, results,
+v0.3: core framework (config, models, hashing, logging, results,
 plugin registry) + file identification + full EXIF/GPS extraction
-and normalization.
-Later phases (XMP/IPTC/ICC, batch, anomaly engine, thumbnails,
+and normalization + XMP/IPTC/ICC extraction.
+Later phases (batch, anomaly engine, thumbnails,
 cases, reporting) plug into the models defined here.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "Pouya Shini Karim"
 __license__ = "MIT"
 

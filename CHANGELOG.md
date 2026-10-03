@@ -5,6 +5,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-02
+
+### Added
+
+- Extended metadata extraction (plan Phase 5): XMP, IPTC/IIM, and ICC
+  profiles, all in pure stdlib.
+- New `parsers/containers.py`: shared defensive traversal for JPEG
+  segments, PNG chunks, and WebP RIFF chunks (one walk per container,
+  reused by all three v0.3 parsers).
+- XMP (`parsers/xmp.py`): packet location in JPEG APP1
+  (`http://ns.adobe.com/xap/1.0/`), PNG iTXt (`XML:com.adobe.xmp`,
+  plain or zlib), WebP `XMP ` chunk, TIFF tag 700. RDF/XML parsed with
+  stdlib `xml.etree`; entity/DOCTYPE declarations refused outright,
+  malformed XML becomes a warning — an unparseable packet still counts
+  as observed. Normalized views: Dublin Core (title/creator/
+  description/rights), XMP Basic (CreateDate, ModifyDate, CreatorTool,
+  Rating), Photoshop (AuthorsPosition, Credit, Source), EXIF-in-XMP
+  (`tiff:*`/`exif:*`); full property flattening kept raw.
+- IPTC/IIM (`parsers/iptc.py`): Photoshop 8BIM parsing of JPEG APP13,
+  IPTC-NAA record decoding with bounds-checked standard and extended
+  dataset lengths. Normalized: object name, keywords, byline, credit,
+  copyright, caption, date/time created (`YYYYMMDD` → ISO); unknown
+  datasets kept verbatim in raw; truncated records keep partial results.
+- ICC (`parsers/icc.py`): profile location in JPEG APP2 (multi-chunk
+  reassembly in sequence order, missing chunks → warning), PNG iCCP
+  (zlib with decompression-bomb cap), TIFF tag 34675. Header parse:
+  size, CMM, version, device class, color space, PCS, creation time,
+  `acsp` signature check, rendering intent, manufacturer/model; tag
+  directory listing (signature + offset + size). No color math — header
+  + directory is the v0.3 scope. A failed `acsp` check surfaces a
+  medium-severity "ICC profile signature invalid" finding.
+- `metatrace inspect` renders XMP / IPTC / ICC sections (human + JSON).
+  New "Capture dates claimed per source" section shows EXIF
+  DateTimeOriginal, XMP CreateDate/ModifyDate, and IPTC DateCreated
+  side by side — never merged; cross-source comparison stays the v0.6
+  anomaly engine's job.
+- New models `XmpData`, `IptcData`, `IccData` in `core/models.py`
+  (observed-vs-normalized separation preserved); new config bounds
+  `xmp_max_packet_bytes` and `icc_max_profile_bytes`.
+- Docs: `docs/USAGE.md` gains a v0.3 scenario step with a real terminal
+  screenshot (`docs/images/04-xmp-iptc-icc.png`); README "what works"
+  and roadmap updated to v0.3.
+- 63 new tests (all four XMP containers, malformed/entity XML,
+  truncated IRB, out-of-order ICC chunks, bad ICC signature, iCCP
+  round-trip, multi-source date display); 208 total, coverage 87%.
+
 ## [0.2.0] - 2026-10-02
 
 ### Added

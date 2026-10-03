@@ -33,6 +33,11 @@ DEFAULTS: dict[str, Any] = {
     # Defensive EXIF parser bounds.
     "exif_max_tags": 512,
     "exif_max_value_bytes": 1024 * 1024,
+    # Defensive v0.3 parser bounds (XMP packets and ICC profiles can be
+    # legitimately large; larger values are truncated/skipped with a
+    # recorded warning, never a crash).
+    "xmp_max_packet_bytes": 4 * 1024 * 1024,
+    "icc_max_profile_bytes": 4 * 1024 * 1024,
     # Bytes of file header read for format identification.
     "identify_header_bytes": 65536,
 }

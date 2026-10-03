@@ -1,5 +1,5 @@
-"""MetaTrace parsers package: EXIF in v0.1."""
+"""MetaTrace parsers package: EXIF (v0.1), GPS (v0.2), XMP/IPTC/ICC (v0.3)."""
 
-from metatrace.parsers import exif
+from metatrace.parsers import containers, exif, icc, iptc, xmp
 
-__all__ = ["exif"]
+__all__ = ["containers", "exif", "icc", "iptc", "xmp"]

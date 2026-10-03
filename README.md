@@ -10,12 +10,14 @@ The core forensic rule: **observed metadata is kept verbatim; normalized fields 
 
 MIT — see [LICENSE](LICENSE). Free for personal and commercial use.
 
-## v0.2 — what works today
+## v0.3 — what works today
 
 - **File identification**: magic-byte format detection (JPEG, PNG, GIF, BMP, WebP, TIFF) and dimension parsing — pure stdlib, no Pillow
 - **Evidence hashing**: SHA-256 (always) and optional SHA-512, streamed, computed *before* any parsing
 - **Full EXIF + GPS normalization**: TIFF/EXIF parser in pure stdlib (both endiannesses) — make/model, timestamps, orientation, ISO, exposure, aperture, focal length, flash, lens, software; GPS IFD decoded to decimal coordinates, altitude, bearing, UTC timestamp with validity checks; raw tag values preserved verbatim
-- **Defensive parsing**: truncated or malicious files produce recorded warnings, never crashes; file-size and value-size bounds; invalid GPS values become explained findings, never silent drops
+- **XMP / IPTC / ICC extraction**: XMP RDF packets (JPEG APP1, PNG iTXt, WebP XMP chunk, TIFF tag 700) with Dublin Core / XMP Basic / Photoshop properties; IPTC/IIM datasets from JPEG APP13 Photoshop IRBs (caption, keywords, byline, credit, copyright, dates); embedded ICC profiles (JPEG APP2, PNG iCCP, TIFF tag 34675) with header + tag directory and `acsp` signature check — full color math out of scope
+- **Per-source date display**: the same logical date from EXIF, XMP and IPTC is shown side by side, never merged — cross-source comparison is the v0.6 anomaly engine's job
+- **Defensive parsing**: truncated or malicious files produce recorded warnings, never crashes; file-size and value-size bounds; invalid GPS values and bad ICC signatures become explained findings, never silent drops
 - **CLI**: `metatrace inspect <image>` with human-readable output and `--json`; `--map-link` prints an OpenStreetMap URL for GPS coordinates (no network request); structured exit codes (0 ok / 1 findings / 2 error); audit logging of every invocation
 - **Framework for the roadmap**: parser/plugin registry, normalized evidence models, JSON config profiles
 
@@ -33,14 +35,14 @@ pip install -e .
 
 ```bash
 $ metatrace inspect photo.jpg
-gps-photo.jpg: JPEG 64x48, 607 bytes, EXIF present
-evidence_id:  MT-640b58c4bfea35bd
-file:         /tmp/mt-docs/gps-photo.jpg (607 bytes)
+photo.jpg: JPEG 64x48, 1718 bytes, EXIF present + XMP + IPTC
+evidence_id:  MT-20e7d60a98f61355
+file:         /tmp/mt-docs/photo.jpg (1718 bytes)
 format:       JPEG (image/jpeg), 64x48
 encoding:     JPEG (baseline DCT)
-sha256:      640b58c4bfea35bd803fa88b7671bb322f06892a42ff619e1a117d1bd7da82ab
-analyzed_at:  2026-10-02T23:37:55.656252Z (UTC)
-tool:         metatrace 0.2.0
+sha256:      20e7d60a98f61355cc244fc1c68fadb894f726c6623352f9b7dd1618daddf74a
+analyzed_at:  2026-10-03T00:06:09.866463Z (UTC)
+tool:         metatrace 0.3.0
 
 EXIF (normalized | raw kept in --json):
   make               TestMake
@@ -67,6 +69,33 @@ GPS:
   method       GPS
   dop          2.5
   raw tags:    13 captured
+
+XMP (normalized | raw packet + properties kept in --json):
+  dc:title           Harbor at dusk
+  dc:creator         ['Pouya Shini Karim']
+  dc:rights          All rights reserved
+  xmp:CreateDate     2026-09-14T18:42:07Z
+  xmp:CreatorTool    TestSoft 2.0
+  xmp:Rating         4
+  photoshop:Credit   Test Agency
+  namespaces:    4 seen
+  raw props:     8 captured
+  raw packet:    912 chars
+
+IPTC/IIM (normalized | raw datasets kept in --json):
+  caption            A harbor at dusk.
+  keywords           ['harbor', 'dusk']
+  byline             ['Pouya Shini Karim']
+  credit             ['Test Agency']
+  copyright          ['(c) 2026 Test']
+  date_created       2026-09-14
+  time_created       18:42:07+00:00
+  raw datasets:  9 captured
+
+Capture dates claimed per source (side by side, never merged):
+  EXIF DateTimeOriginal  2026-09-15T14:22:01
+  XMP xmp:CreateDate     2026-09-14T18:42:07Z
+  IPTC DateCreated       2026-09-14
 ```
 
 *(Output above is from a synthetic test file; dimensions, hashes, and
@@ -90,7 +119,7 @@ Per the master plan, each release is independently useful:
 
 - **v0.1** — Core framework, file identification, hashes, basic EXIF ✅
 - **v0.2** — Full EXIF + GPS normalization (DMS→decimal, validity checks) ✅
-- **v0.3** — XMP/IPTC/ICC extraction + conflicting-field comparison
+- **v0.3** — XMP/IPTC/ICC extraction + conflicting-field comparison ✅
 - **v0.4** — Timestamp and device normalization, cross-field comparison
 - **v0.5** — Batch analysis, parallel processing, duplicate detection
 - **v0.6** — Consistency/anomaly engine (confidence + explanation per flag)

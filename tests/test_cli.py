@@ -6,11 +6,17 @@ import json
 
 import pytest
 from conftest import (
+    build_icc_app2,
+    build_icc_profile,
+    build_iptc_8bim,
     build_jpeg_with_exif,
+    build_jpeg_with_segments,
     build_png,
     build_tiff,
+    build_xmp_packet,
     standard_exif,
     standard_ifd0,
+    standard_iptc_datasets,
 )
 
 from metatrace.cli.main import build_parser, main
@@ -71,6 +77,69 @@ def test_inspect_png_no_exif(tmp_path, capsys):
     assert "EXIF:         not present" in out
 
 
+def test_inspect_v03_sections_and_dates_side_by_side(tmp_path, capsys):
+    """v0.3: XMP/IPTC/ICC sections render; same logical date from three
+    sources is shown side by side, never merged into one value."""
+    tiff = build_tiff(ifd0=standard_ifd0(), exif=standard_exif())
+    exif_seg = (0xE1, b"Exif\x00\x00" + tiff)
+    xmp_seg = (0xE1, b"http://ns.adobe.com/xap/1.0/\x00" + build_xmp_packet())
+    iptc_seg = (0xED, build_iptc_8bim(standard_iptc_datasets()))
+    icc_segs = build_icc_app2(build_icc_profile())
+    data = build_jpeg_with_segments([exif_seg, xmp_seg, iptc_seg, *icc_segs])
+    path = write_tmp(tmp_path, "full.jpg", data)
+
+    code = main(["inspect", path])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "XMP (normalized" in out
+    assert "Harbor at dusk" in out
+    assert "IPTC/IIM (normalized" in out
+    assert "A harbor at dusk." in out
+    assert "ICC profile (header" in out
+    assert "display device" in out
+    # Multi-source dates: all three claims visible, none merged.
+    assert "EXIF DateTimeOriginal" in out
+    assert "2026-09-15T14:22:01" in out  # EXIF claim
+    assert "XMP xmp:CreateDate" in out
+    assert "2026-09-14T18:42:07Z" in out  # XMP claim
+    assert "IPTC DateCreated" in out
+    assert "2026-09-14" in out  # IPTC claim
+    assert "never merged" in out
+
+    code = main(["inspect", path, "--json"])
+    env = json.loads(capsys.readouterr().out)
+    analysis = env["data"]["analysis"]
+    assert analysis["xmp"]["present"]
+    assert analysis["iptc"]["present"]
+    assert analysis["icc"]["present"]
+    assert analysis["xmp"]["dublin_core"]["title"] == "Harbor at dusk"
+    assert analysis["iptc"]["fields"]["keywords"] == ["harbor", "dusk"]
+    assert analysis["icc"]["signature_valid"] is True
+
+
+def test_inspect_v03_absent_sections(tmp_path, capsys):
+    path = write_tmp(tmp_path, "plain.png", build_png(8, 6))
+    code = main(["inspect", path])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "XMP:          not present" in out
+    assert "IPTC:         not present" in out
+    assert "ICC:          not present" in out
+    # No dates section when no source claims a date.
+    assert "side by side" not in out
+
+
+def test_inspect_v03_bad_icc_signature_finding(tmp_path, capsys):
+    profile = build_icc_profile(magic=b"XXXX")
+    data = build_jpeg_with_segments(build_icc_app2(profile))
+    path = write_tmp(tmp_path, "badicc.jpg", data)
+    code = main(["inspect", path, "--json"])
+    assert code == 1  # medium finding
+    env = json.loads(capsys.readouterr().out)
+    assert any(f["title"] == "ICC profile signature invalid" for f in env["findings"])
+    assert env["data"]["analysis"]["icc"]["signature_valid"] is False
+
+
 def test_inspect_unknown_format_warns(tmp_path, capsys):
     path = write_tmp(tmp_path, "x.bin", b"\x00\x01\x02" * 100)
     code = main(["inspect", path, "--json"])
@@ -120,7 +189,7 @@ def test_version_flag(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert "0.2.0" in capsys.readouterr().out
+    assert "0.3.0" in capsys.readouterr().out
 
 
 def test_help_flag():
