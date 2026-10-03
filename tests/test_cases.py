@@ -31,7 +31,7 @@ def state_dir(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def jpeg_evidence(tmp_path):
-    from tests.conftest import (
+    from conftest import (
         build_jpeg_with_exif,
         build_tiff,
         standard_exif,
@@ -185,7 +185,7 @@ def test_verify_detects_changed_and_missing(state_dir, jpeg_evidence, tmp_path):
 
 
 def test_review_append_only(state_dir, tmp_path):
-    from tests.conftest import (
+    from conftest import (
         build_tiff,
         standard_exif,
         standard_ifd0,
