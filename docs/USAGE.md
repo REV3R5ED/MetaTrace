@@ -191,11 +191,52 @@ Unparseable timestamps (a garbage XMP date, an IPTC date that isn't
 a date) are kept verbatim with `parseable: false` and surface a
 low-severity finding — never a silent drop, never a crash.
 
+## Step 8 — Triage a whole directory (v0.5: batch analysis)
+
+A case rarely arrives as one file. Point MetaTrace at a directory and
+it runs the full pipeline — identify, hash, EXIF/XMP/IPTC/ICC,
+normalize, compare — on every recognized image, in parallel:
+
+```
+$ metatrace batch /tmp/batchdemo --jobs 2
+```
+
+![Batch summary: formats, devices, capture days, locations, duplicates](images/06-batch.png)
+
+Observations from this run:
+
+- **Magic bytes, not extensions:** `README.txt` is skipped with a
+  recorded reason instead of crashing the batch. Seven files in,
+  six analyzed, one skipped, zero errors.
+- **Duplicates:** `harbor-01.jpg` and `harbor-01-copy.jpg` are
+  byte-identical (SHA-256) — one duplicate group. Exact content
+  match only; perceptual near-duplicate grouping is v0.7's job.
+- **Devices:** the normalized claims sort the set into Canon EOS R5
+  ×2, Nikon Z 8, Apple iPhone 16, and one file whose device is
+  unknown — no manual sorting.
+- **Locations:** the iPhone shot's GPS claim lands in the
+  `~49.34, -123.16` grid cell, and the output repeats the
+  disclaimer twice: coordinates are metadata claims, never proof of
+  where a photo was taken.
+- **Conflicts counted, not judged:** `agency-04.jpg` has EXIF and
+  XMP disagreeing on capture time, so the summary counts one file
+  with conflicting timestamp claims — descriptive, exactly like the
+  single-image comparison in Step 7.
+- **Machine formats:** `--json` emits per-file analyses plus the
+  summary and groups (stable, deterministic ordering — same input
+  twice gives byte-identical output modulo timestamps); `--csv`
+  emits one row per file for spreadsheets. `--timeline` adds the
+  cross-image timeline.
+
+A progress line (`N/M files`) goes to stderr on human runs and stays
+silent under `--json`/`--csv`, so pipelines never see it.
+
 ## What's next
 
-v0.4 covers identification, hashing, full EXIF, GPS normalization,
+v0.5 covers identification, hashing, full EXIF, GPS normalization,
 XMP/IPTC/ICC extraction, timestamp and device normalization,
-descriptive cross-source comparison, and single-image timelines. The
-roadmap adds batch processing, the anomaly engine, thumbnail
+descriptive cross-source comparison, single-image timelines, and
+batch analysis with duplicate detection and grouping. The
+roadmap adds the anomaly engine, thumbnail
 inspection, case management, and full reporting — each on the same
 evidence-first foundation.

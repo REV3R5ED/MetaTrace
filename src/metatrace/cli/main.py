@@ -1,9 +1,10 @@
-"""MetaTrace CLI: ``metatrace inspect <image>`` (v0.4).
+"""MetaTrace CLI: ``metatrace inspect <image>`` / ``batch <dir>`` (v0.5).
 
 Every command returns a shared result envelope, renders human-readable
-text by default (``--json`` for automation), uses structured exit
-codes (0 ok / 1 findings / 2 error), and writes an audit record.
-Diagnostics go to stderr; stdout carries only the requested output.
+text by default (``--json`` for automation, ``--csv`` for batch
+tabular output), uses structured exit codes (0 ok / 1 findings /
+2 error), and writes an audit record. Diagnostics go to stderr;
+stdout carries only the requested output.
 
 Forensic posture: the source file is only ever opened read-only,
 hashes are computed before any parsing, and parser failures are
@@ -13,6 +14,8 @@ recorded as warnings — never silent, never fatal.
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import sys
 from collections.abc import Sequence
@@ -20,6 +23,10 @@ from pathlib import Path
 from typing import Any
 
 from metatrace import __version__
+from metatrace.batch.grouping import LOCATION_GRID_NOTE, device_key_and_display
+from metatrace.batch.runner import default_jobs, run_batch, stderr_progress
+from metatrace.batch.scan import iter_candidate_files
+from metatrace.batch.summary import build_report
 from metatrace.core import config as config_mod
 from metatrace.core.config import AppConfig, ConfigError
 from metatrace.core.hashing import HashingError, hash_file
@@ -251,6 +258,102 @@ def cmd_config_show(args: argparse.Namespace, cfg: AppConfig) -> Result:
     return result
 
 
+def _resolve_jobs(args: argparse.Namespace, cfg: AppConfig) -> int:
+    if getattr(args, "jobs", None) is not None:
+        jobs = int(args.jobs)
+        if jobs < 1:
+            raise ValueError("--jobs must be >= 1")
+        return jobs
+    configured = int(cfg["batch_jobs"])
+    if configured > 0:
+        return configured
+    return default_jobs()
+
+
+def cmd_batch(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.5: analyze every recognized image in a directory, in parallel."""
+    result = Result(command="batch", target=args.directory)
+    try:
+        paths = iter_candidate_files(args.directory, recursive=args.recursive)
+        jobs = _resolve_jobs(args, cfg)
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
+        result.fail(str(exc))
+        return result
+
+    quiet = bool(getattr(args, "json", False) or getattr(args, "csv", False))
+    results = run_batch(
+        paths,
+        cfg,
+        jobs,
+        progress=None if quiet else stderr_progress,
+    )
+    report = build_report(
+        root=args.directory,
+        recursive=args.recursive,
+        jobs=jobs,
+        results=results,
+        include_timeline=bool(getattr(args, "timeline", False)),
+    )
+    result.data = {"batch": report.to_dict()}
+
+    summary = report.summary
+    dup_note = (
+        f", {summary.duplicate_groups} duplicate group(s)"
+        if summary.duplicate_groups
+        else ""
+    )
+    result.summary = (
+        f"batch {args.directory}: {summary.analyzed} analyzed, "
+        f"{summary.skipped} skipped, {summary.errors} errors{dup_note}"
+    )
+
+    # Envelope findings: skips and per-file errors are always worth
+    # flagging; duplicates and conflicts are informational counts
+    # (descriptive, never verdicts — v0.6 judges).
+    for fr in report.files:
+        if fr.status == "skipped":
+            result.add_finding(
+                Finding(
+                    title="file skipped",
+                    severity="info",
+                    reason=f"{fr.path}: {fr.skipped_reason}",
+                    evidence=["skipped files are listed in the batch report"],
+                )
+            )
+        elif fr.status == "error":
+            result.add_finding(
+                Finding(
+                    title="file failed analysis",
+                    severity="medium",
+                    reason=f"{fr.path}: {fr.error}",
+                    evidence=["batch continued with the remaining files"],
+                )
+            )
+    if report.duplicates:
+        result.add_finding(
+            Finding(
+                title="duplicate files detected",
+                severity="info",
+                reason=f"{summary.duplicate_groups} group(s), "
+                f"{summary.duplicate_files} file(s) share identical content "
+                "(SHA-256); groups listed in the batch report",
+                evidence=["exact content match only — no perceptual comparison"],
+            )
+        )
+    if summary.files_with_conflicts:
+        result.add_finding(
+            Finding(
+                title="files with conflicting timestamp claims",
+                severity="info",
+                reason=f"{summary.files_with_conflicts} file(s) have metadata "
+                "sources that disagree on capture time (comparison status "
+                "DIFFER); recorded descriptively, not judged",
+                evidence=["per-file comparison facts in the batch report"],
+            )
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
@@ -443,12 +546,233 @@ def _render_timeline_section(timeline: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def _batch_file_brief(f: dict[str, Any]) -> str:
+    """One compact line per file for human batch output."""
+    name = Path(f["path"]).name
+    if f["status"] == "skipped":
+        return f"  {name:<32} skipped: {f['skipped_reason']}"
+    if f["status"] == "error":
+        return f"  {name:<32} ERROR: {f['error']}"
+    a = f["analysis"]
+    ident = a["identity"]
+    _key, device = device_key_and_display(a)
+    day = "date unknown"
+    for ts in a.get("timestamps") or []:
+        if ts.get("label") == "capture" and ts.get("parseable", True):
+            day = (ts.get("value_utc") or ts.get("wall") or "?")[:10]
+            break
+    warns = len(a.get("parser_warnings") or [])
+    warn_note = f" ({warns} warning{'s' if warns != 1 else ''})" if warns else ""
+    return f"  {name:<32} {ident['format']:<6} {device:<24} {day}{warn_note}"
+
+
+def _render_batch_timeline_section(
+    entries: list[dict[str, Any]],
+) -> list[str]:
+    lines = [""]
+    lines.append("Cross-image timeline (v0.4 ordering rule):")
+    for entry in entries:
+        ts = entry["timestamp"]
+        if ts["value_utc"]:
+            when = ts["value_utc"]
+        elif ts["wall"]:
+            when = f"{ts['wall']} (tz unknown)"
+        else:
+            when = f"unparseable: {ts['raw']!r}"
+        lines.append(
+            f"  {when:<34} {entry['filename']:<24} {ts['source']} ({ts['label']})"
+        )
+    return lines
+
+
+def _render_batch_human(batch: dict[str, Any]) -> list[str]:
+    """Human-readable batch report: summary tables + per-file lines."""
+    lines: list[str] = []
+    s = batch["summary"]
+    lines.append("")
+    lines.append(
+        f"Files: {s['total_files']} total — {s['analyzed']} analyzed, "
+        f"{s['skipped']} skipped, {s['errors']} errors"
+    )
+
+    def _table(title: str, counts: dict[str, int]) -> None:
+        if not counts:
+            return
+        lines.append("")
+        lines.append(f"{title}:")
+        for key in sorted(counts):
+            lines.append(f"  {key:<42} {counts[key]}")
+
+    _table("Formats", s["by_format"])
+    _table("Devices (normalized make + model claims)", s["by_device"])
+    _table("Capture days (claimed)", s["by_capture_day"])
+
+    if s["by_location"]:
+        lines.append("")
+        lines.append("Locations (GPS metadata claims):")
+        lines.append(f"  note  {LOCATION_DISCLAIMER}")
+        lines.append(f"  note  {LOCATION_GRID_NOTE}")
+        for key in sorted(s["by_location"]):
+            lines.append(f"  {key:<42} {s['by_location'][key]}")
+
+    if batch["duplicates"]:
+        lines.append("")
+        lines.append(
+            f"Duplicates ({len(batch['duplicates'])} group(s), "
+            "exact SHA-256 content match):"
+        )
+        for group in batch["duplicates"]:
+            lines.append(
+                f"  sha256 {group['sha256'][:16]}… ({len(group['files'])} files):"
+            )
+            for path in group["files"]:
+                lines.append(f"    {Path(path).name}")
+
+    conflicted = [
+        f["path"]
+        for f in batch["files"]
+        if f["status"] == "ok"
+        and any(
+            fact.get("status") == "differ"
+            for fact in (f["analysis"].get("comparison") or [])
+        )
+    ]
+    if conflicted:
+        lines.append("")
+        lines.append("Conflicting timestamp claims (descriptive — not a verdict):")
+        for path in conflicted:
+            lines.append(f"  {Path(path).name}")
+
+    lines.append("")
+    lines.append("Per-file results:")
+    for f in batch["files"]:
+        lines.append(_batch_file_brief(f))
+
+    skipped = [f for f in batch["files"] if f["status"] == "skipped"]
+    if skipped:
+        lines.append("")
+        lines.append("Skipped (not recognized images):")
+        for f in skipped:
+            lines.append(f"  {Path(f['path']).name}: {f['skipped_reason']}")
+    errors = [f for f in batch["files"] if f["status"] == "error"]
+    if errors:
+        lines.append("")
+        lines.append("Errors:")
+        for f in errors:
+            lines.append(f"  {Path(f['path']).name}: {f['error']}")
+
+    if batch["timeline"]:
+        lines.extend(_render_batch_timeline_section(batch["timeline"]))
+    return lines
+
+
+def _render_batch_csv(batch: dict[str, Any]) -> str:
+    """One row per file: stable column order, QUOTE_MINIMAL."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "path",
+            "filename",
+            "status",
+            "format",
+            "width",
+            "height",
+            "size_bytes",
+            "sha256",
+            "make",
+            "model",
+            "software",
+            "capture_day",
+            "gps_latitude",
+            "gps_longitude",
+            "duplicate_group",
+            "warnings",
+            "error",
+        ]
+    )
+    dup_of: dict[str, str] = {}
+    for group in batch["duplicates"]:
+        for path in group["files"]:
+            dup_of[path] = group["sha256"][:16]
+    for f in batch["files"]:
+        if f["status"] != "ok" or not f["analysis"]:
+            writer.writerow(
+                [
+                    f["path"],
+                    Path(f["path"]).name,
+                    f["status"],
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    dup_of.get(f["path"], ""),
+                    "",
+                    f.get("error") or f.get("skipped_reason") or "",
+                ]
+            )
+            continue
+        a = f["analysis"]
+        ident = a["identity"]
+        claims = (a.get("device") or {}).get("claims") or []
+        exif_claim = next((c for c in claims if c.get("source") == "EXIF"), None)
+        claim = exif_claim or (claims[0] if claims else {})
+        day = ""
+        for ts in a.get("timestamps") or []:
+            if ts.get("label") == "capture" and ts.get("parseable", True):
+                day = (ts.get("value_utc") or ts.get("wall") or "")[:10]
+                break
+        gps = (a.get("exif") or {}).get("gps") or {}
+        writer.writerow(
+            [
+                f["path"],
+                ident["filename"],
+                "ok",
+                ident["format"],
+                ident["width"] if ident["width"] is not None else "",
+                ident["height"] if ident["height"] is not None else "",
+                ident["size_bytes"],
+                (a.get("hashes") or {}).get("sha256", ""),
+                claim.get("make_norm") or "",
+                claim.get("model_norm") or "",
+                claim.get("software_norm") or "",
+                day,
+                gps.get("latitude") if gps.get("latitude") is not None else "",
+                gps.get("longitude") if gps.get("longitude") is not None else "",
+                dup_of.get(f["path"], ""),
+                len(a.get("parser_warnings") or []),
+                "",
+            ]
+        )
+    return buf.getvalue().rstrip("\n")
+
+
 def render_human(result: Result, args: argparse.Namespace) -> str:
     lines: list[str] = []
     if result.summary:
         lines.append(result.summary)
     if result.status == "error":
         return "\n".join(lines) if lines else "error"
+
+    if result.command == "batch":
+        batch = result.data.get("batch")
+        if batch:
+            lines.extend(_render_batch_human(batch))
+        if result.findings:
+            lines.append("")
+            lines.append("Findings:")
+            for f in result.findings:
+                lines.append(f"  [{f.severity}] {f.title}")
+                if f.reason:
+                    lines.append(f"    {f.reason}")
+        return "\n".join(lines)
 
     if result.command == "timeline":
         timeline = result.data.get("timeline") or []
@@ -574,6 +898,10 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
 def render(result: Result, args: argparse.Namespace) -> str:
     if args.json:
         return json.dumps(result.to_dict(), indent=2)
+    if getattr(args, "csv", False) and result.command == "batch":
+        batch = result.data.get("batch")
+        if batch:
+            return _render_batch_csv(batch)
     return render_human(result, args)
 
 
@@ -586,8 +914,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="metatrace",
         description="MetaTrace — image forensics and metadata analysis "
-        "(v0.4: core + file identification + full EXIF/GPS + XMP/IPTC/ICC + "
-        "timestamp/device normalization + cross-source comparison + timelines). "
+        "(v0.5: core + file identification + full EXIF/GPS + XMP/IPTC/ICC + "
+        "timestamp/device normalization + cross-source comparison + timelines + "
+        "batch analysis). "
         "Trace the story behind the image. MIT licensed.",
     )
     parser.add_argument(
@@ -641,6 +970,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_timeline.add_argument("image", help="path to the image file (read-only)")
     p_timeline.set_defaults(func=cmd_timeline)
+
+    p_batch = sub.add_parser(
+        "batch",
+        help="analyze every recognized image in a directory (parallel), "
+        "with duplicate detection and grouping",
+        parents=[output_parent],
+    )
+    p_batch.add_argument(
+        "directory", help="directory to scan (read-only; files are never modified)"
+    )
+    p_batch.add_argument(
+        "--recursive",
+        action="store_true",
+        help="descend into subdirectories (symlinked directories are not followed)",
+    )
+    p_batch.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="parallel worker threads (default: config 'batch_jobs', "
+        "or min(4, CPU count) when 0/unset)",
+    )
+    p_batch.add_argument(
+        "--timeline",
+        action="store_true",
+        help="include a cross-image timeline of every timestamp claim",
+    )
+    p_batch.add_argument(
+        "--csv",
+        action="store_true",
+        help="emit one CSV row per file instead of human-readable output",
+    )
+    p_batch.set_defaults(func=cmd_batch)
 
     p_config = sub.add_parser("config", help="configuration")
     config_sub = p_config.add_subparsers(dest="config_command", required=True)

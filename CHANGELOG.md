@@ -5,6 +5,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-03
+
+### Added
+
+- Batch analysis (plan Phase 7): new `batch/` package, pure stdlib.
+- `metatrace batch <dir>`: full pipeline over every recognized image
+  in a directory (`--recursive` opt-in). Files are identified by
+  magic bytes, never extensions; non-images are skipped with a
+  recorded reason; per-file failures become error records — the batch
+  never crashes.
+- Parallel processing via `ThreadPoolExecutor` (`--jobs N`; default
+  is config `batch_jobs`, or min(4, CPU count) when unset).
+  Deterministic output ordering (by path); stderr progress line on
+  human runs, silent with `--json`/`--csv`.
+- Duplicate detection by SHA-256 (exact content match; perceptual
+  grouping is v0.7's job).
+- Grouping by normalized device (make + model claim), by claimed
+  capture day, and by ~1km GPS grid cell. Every location output
+  repeats the claimed-location disclaimer.
+- `metatrace batch --timeline`: cross-image timeline of every
+  timestamp claim, ordered by the v0.4 rule.
+- Batch summary: counts by format/device/capture-day/location,
+  duplicate groups, files-with-GPS, files-with-conflicting-timestamps
+  (descriptive DIFFER counts, never verdicts).
+- `--json` (per-file results + summary + groups) and `--csv` (one
+  row per file); exit codes 0 ok / 1 findings / 2 error.
+- New config knob `batch_jobs` (0 = automatic).
+
 ## [0.4.0] - 2026-10-02
 
 ### Added

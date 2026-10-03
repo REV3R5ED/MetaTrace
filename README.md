@@ -10,7 +10,14 @@ The core forensic rule: **observed metadata is kept verbatim; normalized fields 
 
 MIT — see [LICENSE](LICENSE). Free for personal and commercial use.
 
-## v0.4 — what works today
+## v0.5 — what works today
+
+- **Batch analysis**: `metatrace batch <dir>` scans a directory (opt-in `--recursive`) and runs the full pipeline on every recognized image — per-file results plus a batch summary. Files are identified by magic bytes, never extensions; non-images are skipped with a recorded reason, per-file failures become error records, the batch never crashes
+- **Parallel processing**: `ThreadPoolExecutor` with `--jobs N` (default: config `batch_jobs`, or min(4, CPU count) when unset); output ordering is by path regardless of completion order, so runs are deterministic; a stderr progress line (`N/M files`) shows progress on human runs, silent with `--json`/`--csv`
+- **Duplicate detection**: exact content duplicates grouped by SHA-256 (near-duplicate/perceptual grouping is v0.7's job)
+- **Grouping**: by normalized device (make + model claim), by claimed capture day, and by ~1km GPS grid cell — every location output repeats that coordinates are metadata claims, not proof of where a photo was taken
+- **Cross-image timeline**: `metatrace batch --timeline` lines up every timestamp claim from every file under the v0.4 ordering rule
+- **Batch summary**: counts by format/device/capture-day/location, duplicate groups, files-with-GPS count, files-with-conflicting-timestamps count (descriptive DIFFER counts, never verdicts); `--json` (per-file results + summary + groups) and `--csv` (one row per file); exit codes 0 ok / 1 findings / 2 error
 
 - **File identification**: magic-byte format detection (JPEG, PNG, GIF, BMP, WebP, TIFF) and dimension parsing — pure stdlib, no Pillow
 - **Evidence hashing**: SHA-256 (always) and optional SHA-512, streamed, computed *before* any parsing
@@ -140,7 +147,7 @@ Per the master plan, each release is independently useful:
 - **v0.2** — Full EXIF + GPS normalization (DMS→decimal, validity checks) ✅
 - **v0.3** — XMP/IPTC/ICC extraction + conflicting-field comparison ✅
 - **v0.4** — Timestamp and device normalization, cross-field comparison ✅
-- **v0.5** — Batch analysis, parallel processing, duplicate detection
+- **v0.5** — Batch analysis, parallel processing, duplicate detection ✅
 - **v0.6** — Consistency/anomaly engine (confidence + explanation per flag)
 - **v0.7** — Embedded thumbnail/content analysis
 - **v0.8** — Case management, chain of custody, evidence manifests

@@ -40,6 +40,9 @@ DEFAULTS: dict[str, Any] = {
     "icc_max_profile_bytes": 4 * 1024 * 1024,
     # Bytes of file header read for format identification.
     "identify_header_bytes": 65536,
+    # Batch worker threads (v0.5). 0 = automatic: min(4, CPU count).
+    # Overridden by `metatrace batch --jobs N`.
+    "batch_jobs": 0,
 }
 
 _PROFILE_DEFAULT = "default"

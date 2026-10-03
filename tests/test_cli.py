@@ -192,7 +192,7 @@ def test_version_flag(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert "0.4.0" in capsys.readouterr().out
+    assert "0.5.0" in capsys.readouterr().out
 
 
 def test_help_flag():

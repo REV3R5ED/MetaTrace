@@ -17,7 +17,7 @@ from metatrace.core.models import Analysis
 from metatrace.core.results import Finding
 from metatrace.normalize.compare import ComparisonFact, compare_sources
 from metatrace.normalize.devices import DeviceIdentity, normalize_device
-from metatrace.normalize.timeline import build_timeline
+from metatrace.normalize.timeline import build_timeline, timeline_sort_key
 from metatrace.normalize.timestamps import (
     NormalizedTimestamp,
     collect_timestamps,
@@ -32,6 +32,7 @@ __all__ = [
     "collect_timestamps",
     "compare_sources",
     "normalize_device",
+    "timeline_sort_key",
 ]
 
 
