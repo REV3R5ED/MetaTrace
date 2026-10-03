@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "metatrace"
-version = "0.6.0"
-description = "MetaTrace — image forensics and metadata analysis (v0.7: core + file ID + EXIF/GPS + XMP/IPTC/ICC + normalization + comparison + timelines + batch analysis + anomaly engine + thumbnails)"
+version = "0.8.0"
+description = "MetaTrace — image forensics and metadata analysis (v0.8: core + file ID + EXIF/GPS + XMP/IPTC/ICC + normalization + comparison + timelines + batch analysis + anomaly engine + thumbnails + case management)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

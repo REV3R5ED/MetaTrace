@@ -28,6 +28,19 @@ from metatrace.batch.grouping import LOCATION_GRID_NOTE, device_key_and_display
 from metatrace.batch.runner import default_jobs, run_batch, stderr_progress
 from metatrace.batch.scan import iter_candidate_files
 from metatrace.batch.summary import build_report
+from metatrace.cases import (
+    REVIEW_VERDICTS,
+    CaseError,
+    CaseStore,
+    EvidenceRecord,
+    FlagReview,
+    build_manifest,
+    verify_case,
+)
+from metatrace.cases import (
+    build_report as build_case_report,
+)
+from metatrace.cases.manifest import flag_id_for, snapshot_flags
 from metatrace.core import config as config_mod
 from metatrace.core.config import AppConfig, ConfigError
 from metatrace.core.hashing import HashingError, hash_file
@@ -965,6 +978,444 @@ def _render_batch_csv(batch: dict[str, Any]) -> str:
     return buf.getvalue().rstrip("\n")
 
 
+# ---------------------------------------------------------------------------
+# v0.8: case management commands
+# ---------------------------------------------------------------------------
+
+
+def _case_store() -> CaseStore:
+    return CaseStore()
+
+
+def cmd_case_create(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: create a new investigation case."""
+    result = Result(command="case", target=None)
+    store = _case_store()
+    try:
+        case_id = store.next_case_id()
+        store.create_case(case_id, args.title, args.description or "", utc_now_iso())
+        store.log_custody(case_id, "create", f"title: {args.title}")
+        case = store.get_case(case_id)
+    except CaseError as exc:
+        result.fail(str(exc))
+        return result
+    finally:
+        store.close()
+    result.summary = f"case {case_id} created: {case.title}"
+    result.data = {"case_action": "create", "case": case.to_dict()}
+    return result
+
+
+def cmd_case_list(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: list all cases."""
+    result = Result(command="case", target=None)
+    store = _case_store()
+    try:
+        cases = store.list_cases()
+    finally:
+        store.close()
+    result.summary = f"{len(cases)} case(s)" if cases else "no cases yet"
+    result.data = {
+        "case_action": "list",
+        "cases": [c.to_dict() for c in cases],
+    }
+    return result
+
+
+def cmd_case_show(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: show one case with counts."""
+    result = Result(command="case", target=args.case_id)
+    store = _case_store()
+    try:
+        case = store.get_case(args.case_id)
+        stats = store.stats(args.case_id)
+    except CaseError as exc:
+        result.fail(str(exc))
+        return result
+    finally:
+        store.close()
+    result.summary = (
+        f"case {case.id}: {case.title} [{case.status}], "
+        f"{stats['evidence']} evidence item(s)"
+    )
+    result.data = {
+        "case_action": "show",
+        "case": case.to_dict(),
+        "counts": stats,
+    }
+    return result
+
+
+def cmd_case_add(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: register an image as case evidence (hash + snapshot, no copy)."""
+    result = Result(command="case", target=args.case_id)
+    store = _case_store()
+    try:
+        case = store.get_case(args.case_id)
+    except CaseError as exc:
+        result.fail(str(exc))
+        store.close()
+        return result
+    try:
+        analysis, _pipeline_findings = analyze_image(args.image, cfg)
+    except (FileNotFoundError, IsADirectoryError, ValueError, OSError) as exc:
+        store.close()
+        result.fail(str(exc))
+        return result
+    flags, notes = detect_anomalies(analysis)
+    snapshot = {
+        "analysis": analysis.to_dict(),
+        "tolerance_s": 60.0,
+        "anomalies": [f.to_dict() for f in flags],
+        "notes": notes,
+    }
+    evidence_id = store.next_evidence_id(case.id)
+    record = EvidenceRecord(
+        id=evidence_id,
+        case_id=case.id,
+        path=args.image,
+        sha256=analysis.hashes.get("sha256", ""),
+        added_utc=utc_now_iso(),
+        note=args.note or "",
+        snapshot_json=json.dumps(snapshot, sort_keys=True),
+    )
+    store.add_evidence(record)
+    store.log_custody(
+        case.id,
+        "add-evidence",
+        f"{evidence_id}: {args.image} sha256={record.sha256[:16]}…",
+    )
+    store.close()
+    n = len(flags)
+    result.summary = (
+        f"added {args.image} to {case.id} as {evidence_id} "
+        f"({n} anomal{'y' if n == 1 else 'ies'} flagged)"
+    )
+    result.data = {
+        "case_action": "add",
+        "case_id": case.id,
+        "evidence": record.to_dict(),
+        "anomaly_count": n,
+    }
+    return result
+
+
+def _case_flags(store: CaseStore, case_id: str) -> list[dict[str, Any]]:
+    """All anomaly flags across a case's evidence, with review state."""
+    reviews = {r.flag_id: r.to_dict() for r in store.list_reviews(case_id)}
+    flags: list[dict[str, Any]] = []
+    for ev in store.list_evidence(case_id):
+        for f in snapshot_flags(ev):
+            fid = flag_id_for(ev.id, f.get("rule_id", ""))
+            flags.append(
+                {
+                    "flag_id": fid,
+                    "evidence_id": ev.id,
+                    "rule_id": f.get("rule_id"),
+                    "severity": f.get("severity"),
+                    "confidence": f.get("confidence"),
+                    "title": f.get("title"),
+                    "review": reviews.get(fid),
+                }
+            )
+    return flags
+
+
+def cmd_case_flags(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: list anomaly flags across a case's evidence."""
+    result = Result(command="case", target=args.case_id)
+    store = _case_store()
+    try:
+        store.get_case(args.case_id)
+        flags = _case_flags(store, args.case_id)
+    except CaseError as exc:
+        result.fail(str(exc))
+        return result
+    finally:
+        store.close()
+    result.summary = f"{args.case_id}: {len(flags)} anomaly flag(s)"
+    result.data = {"case_action": "flags", "flags": flags}
+    return result
+
+
+def cmd_case_review(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: record an analyst review of one anomaly flag (append-only)."""
+    result = Result(command="case", target=args.case_id)
+    if args.verdict not in REVIEW_VERDICTS:
+        result.fail(
+            f"invalid verdict {args.verdict!r}; "
+            f"expected one of {', '.join(REVIEW_VERDICTS)}"
+        )
+        return result
+    store = _case_store()
+    try:
+        store.get_case(args.case_id)
+        evidence_id, _, rule_id = args.flag.partition(":")
+        if not evidence_id or not rule_id:
+            result.fail(
+                f"invalid flag id {args.flag!r}; expected "
+                "'<evidence-id>:<rule-id>' (see 'case flags')"
+            )
+            return result
+        ev = store.get_evidence(args.case_id, evidence_id)
+        known = {f.get("rule_id") for f in snapshot_flags(ev) if f.get("rule_id")}
+        if rule_id not in known:
+            result.fail(
+                f"no flag with rule {rule_id!r} on {evidence_id}; see 'case flags'"
+            )
+            return result
+        review = FlagReview(
+            case_id=args.case_id,
+            evidence_id=evidence_id,
+            flag_id=args.flag,
+            rule_id=rule_id,
+            verdict=args.verdict,
+            note=args.note or "",
+        )
+        store.add_review(review)
+        store.log_custody(
+            args.case_id,
+            "review-flag",
+            f"{args.flag} -> {args.verdict}",
+        )
+    except CaseError as exc:
+        result.fail(str(exc))
+        return result
+    finally:
+        store.close()
+    result.summary = f"review recorded: {args.flag} -> {args.verdict} ({args.case_id})"
+    result.data = {
+        "case_action": "review",
+        "case_id": args.case_id,
+        "review": review.to_dict(),
+    }
+    return result
+
+
+def cmd_case_note(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: append an analyst note to a case."""
+    result = Result(command="case", target=args.case_id)
+    store = _case_store()
+    try:
+        store.get_case(args.case_id)
+        store.add_note(args.case_id, args.text)
+        store.log_custody(args.case_id, "note", args.text[:120])
+    except CaseError as exc:
+        result.fail(str(exc))
+        return result
+    finally:
+        store.close()
+    result.summary = f"note added to {args.case_id}"
+    result.data = {"case_action": "note", "case_id": args.case_id}
+    return result
+
+
+def cmd_case_custody(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: list the chain-of-custody events for a case."""
+    result = Result(command="case", target=args.case_id)
+    store = _case_store()
+    try:
+        events = store.list_custody(args.case_id)
+    except CaseError as exc:
+        result.fail(str(exc))
+        return result
+    finally:
+        store.close()
+    result.summary = f"{args.case_id}: {len(events)} custody event(s)"
+    result.data = {
+        "case_action": "custody",
+        "events": [e.to_dict() for e in events],
+    }
+    return result
+
+
+def cmd_case_manifest(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: build the evidence manifest for a case."""
+    result = Result(command="case", target=args.case_id)
+    store = _case_store()
+    try:
+        manifest = build_manifest(store, args.case_id)
+        store.log_custody(args.case_id, "manifest", f"sha256={manifest.sha256[:16]}…")
+    except CaseError as exc:
+        result.fail(str(exc))
+        return result
+    finally:
+        store.close()
+    if args.output:
+        Path(args.output).write_text(
+            json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        result.summary = (
+            f"manifest for {args.case_id} written to {args.output} "
+            f"({len(manifest.evidence)} evidence item(s))"
+        )
+    else:
+        result.summary = (
+            f"manifest for {args.case_id}: {len(manifest.evidence)} "
+            f"evidence item(s), sha256 {manifest.sha256[:16]}…"
+        )
+    result.data = {"case_action": "manifest", "manifest": manifest.to_dict()}
+    return result
+
+
+def cmd_case_verify(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: re-hash evidence files; report changed/missing/unreadable."""
+    result = Result(command="case", target=args.case_id)
+    store = _case_store()
+    try:
+        checks = verify_case(store, args.case_id)
+    except CaseError as exc:
+        result.fail(str(exc))
+        return result
+    finally:
+        store.close()
+    bad = [c for c in checks if c["status"] != "ok"]
+    ok = len(checks) - len(bad)
+    result.summary = (
+        f"verify {args.case_id}: {ok} ok, "
+        + ", ".join(
+            f"{c['status']}={sum(1 for x in bad if x['status'] == c['status'])}"
+            for c in bad
+        )
+        if bad
+        else f"verify {args.case_id}: {ok} ok, nothing changed"
+    )
+    for c in bad:
+        result.add_finding(
+            Finding(
+                title=f"evidence {c['status']}: {c['evidence_id']}",
+                severity="high" if c["status"] in ("changed", "missing") else "medium",
+                reason=(
+                    f"{c['path']}: recorded sha256 {c['expected_sha256'][:16]}… "
+                    f"does not match the file on disk"
+                    if c["status"] == "changed"
+                    else f"{c['path']}: {c['status']}"
+                ),
+                evidence=[f"evidence_id: {c['evidence_id']}"],
+                confidence=100,
+            )
+        )
+    result.data = {"case_action": "verify", "checks": checks}
+    return result
+
+
+def cmd_case_report(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: write a reproducible report bundle for a case."""
+    result = Result(command="case", target=args.case_id)
+    store = _case_store()
+    try:
+        info = build_case_report(store, args.case_id, args.output, force=args.force)
+        store.log_custody(
+            args.case_id, "report", f"bundle written to {info['output_dir']}"
+        )
+    except CaseError as exc:
+        result.fail(str(exc))
+        return result
+    finally:
+        store.close()
+    result.summary = (
+        f"report for {args.case_id} written to {info['output_dir']}: "
+        f"{len(info['artifacts'])} artifact(s)"
+    )
+    result.data = {"case_action": "report", **info}
+    return result
+
+
+def cmd_case_status(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.8: change a case's status (closing requires --note)."""
+    result = Result(command="case", target=args.case_id)
+    if args.status not in ("open", "in-progress", "closed"):
+        result.fail(f"invalid status {args.status!r}")
+        return result
+    if args.status == "closed" and not args.note:
+        result.fail("closing a case requires --note (record the resolution)")
+        return result
+    store = _case_store()
+    try:
+        case = store.get_case(args.case_id)
+        store.set_status(args.case_id, args.status)
+        detail = f"{case.status} -> {args.status}"
+        if args.note:
+            store.add_note(args.case_id, args.note)
+            detail += f"; note: {args.note[:120]}"
+        store.log_custody(args.case_id, "status", detail)
+    except CaseError as exc:
+        result.fail(str(exc))
+        return result
+    finally:
+        store.close()
+    result.summary = f"case {args.case_id} status -> {args.status}"
+    result.data = {
+        "case_action": "status",
+        "case_id": args.case_id,
+        "status": args.status,
+    }
+    return result
+
+
+def _render_case_human(data: dict[str, Any]) -> list[str]:
+    """v0.8: human-readable rendering for `case` subcommands."""
+    lines: list[str] = []
+    action = data.get("case_action")
+    if action == "list":
+        for c in data.get("cases") or []:
+            lines.append(f"  {c['id']}: {c['title']} [{c['status']}]")
+    elif action == "show":
+        case = data["case"]
+        counts = data.get("counts") or {}
+        lines.append("")
+        lines.append(f"  title:    {case['title']}")
+        lines.append(f"  status:   {case['status']}")
+        lines.append(f"  created:  {case['created_utc']}")
+        if case.get("description"):
+            lines.append(f"  desc:     {case['description']}")
+        lines.append(
+            f"  evidence: {counts.get('evidence', 0)} item(s), "
+            f"{counts.get('custody_events', 0)} custody event(s), "
+            f"{counts.get('notes', 0)} note(s), "
+            f"{counts.get('reviews', 0)} review(s)"
+        )
+    elif action == "add":
+        ev = data["evidence"]
+        lines.append("")
+        lines.append(f"  evidence: {ev['id']}")
+        lines.append(f"  sha256:   {ev['sha256']}")
+        lines.append(f"  added:    {ev['added_utc']} (UTC)")
+        if ev.get("note"):
+            lines.append(f"  note:     {ev['note']}")
+    elif action == "flags":
+        for f in data.get("flags") or []:
+            review = f.get("review")
+            state = f"reviewed: {review['verdict']}" if review else "unreviewed"
+            lines.append(
+                f"  {f['flag_id']} [{f['severity']}] {f['title']} "
+                f"(confidence {f['confidence']}) — {state}"
+            )
+    elif action == "custody":
+        for e in data.get("events") or []:
+            lines.append(
+                f"  [{e['ts_utc']}] {e['actor']}: {e['action']}"
+                + (f" — {e['detail']}" if e.get("detail") else "")
+            )
+    elif action == "manifest":
+        manifest = data["manifest"]
+        lines.append("")
+        lines.append(f"  sha256:   {manifest['sha256']}")
+        lines.append(f"  generated:{manifest['generated_utc']}")
+        for ev in manifest.get("evidence") or []:
+            lines.append(
+                f"  {ev['evidence_id']}: {ev['path']} sha256 {ev['sha256'][:16]}…"
+            )
+    elif action == "verify":
+        for c in data.get("checks") or []:
+            lines.append(f"  {c['evidence_id']}: {c['status']} ({c['path']})")
+    elif action == "report":
+        for name, digest in (data.get("artifacts") or {}).items():
+            lines.append(f"  {name}: {digest[:16]}…")
+    return lines
+
+
 def render_human(result: Result, args: argparse.Namespace) -> str:
     lines: list[str] = []
     if result.summary:
@@ -1017,6 +1468,17 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
                 result.data.get("notes") or [],
             )
         )
+        if result.findings:
+            lines.append("")
+            lines.append("Findings:")
+            for f in result.findings:
+                lines.append(f"  [{f.severity}] {f.title}")
+                if f.reason:
+                    lines.append(f"    {f.reason}")
+        return "\n".join(lines)
+
+    if result.command == "case":
+        lines.extend(_render_case_human(result.data))
         if result.findings:
             lines.append("")
             lines.append("Findings:")
@@ -1155,9 +1617,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="metatrace",
         description="MetaTrace — image forensics and metadata analysis "
-        "(v0.7: core + file identification + full EXIF/GPS + XMP/IPTC/ICC + "
+        "(v0.8: core + file identification + full EXIF/GPS + XMP/IPTC/ICC + "
         "timestamp/device normalization + cross-source comparison + timelines + "
-        "batch analysis + anomaly engine + embedded thumbnails). "
+        "batch analysis + anomaly engine + embedded thumbnails + case "
+        "management). "
         "Trace the story behind the image. MIT licensed.",
     )
     parser.add_argument(
@@ -1291,6 +1754,122 @@ def build_parser() -> argparse.ArgumentParser:
         "show", help="show effective configuration", parents=[output_parent]
     )
     p_show.set_defaults(func=cmd_config_show)
+
+    # v0.8: case management (SQLite case DB, chain of custody, manifests).
+    p_case = sub.add_parser("case", help="case management")
+    case_sub = p_case.add_subparsers(dest="case_command", required=True)
+
+    c_create = case_sub.add_parser(
+        "create", help="create a new case", parents=[output_parent]
+    )
+    c_create.add_argument("--title", required=True, help="case title")
+    c_create.add_argument("--description", default="", help="case description")
+    c_create.set_defaults(func=cmd_case_create)
+
+    c_list = case_sub.add_parser("list", help="list all cases", parents=[output_parent])
+    c_list.set_defaults(func=cmd_case_list)
+
+    c_show = case_sub.add_parser(
+        "show", help="show a case with counts", parents=[output_parent]
+    )
+    c_show.add_argument("case_id", help="case id (e.g. MT-CASE-2026-001)")
+    c_show.set_defaults(func=cmd_case_show)
+
+    c_add = case_sub.add_parser(
+        "add",
+        help="register an image as evidence (hash + snapshot, file not copied)",
+        parents=[output_parent],
+    )
+    c_add.add_argument("case_id", help="case id")
+    c_add.add_argument("image", help="path to the image file (read-only)")
+    c_add.add_argument("--note", default="", help="note about this evidence")
+    c_add.set_defaults(func=cmd_case_add)
+
+    c_flags = case_sub.add_parser(
+        "flags",
+        help="list anomaly flags across a case's evidence",
+        parents=[output_parent],
+    )
+    c_flags.add_argument("case_id", help="case id")
+    c_flags.set_defaults(func=cmd_case_flags)
+
+    c_review = case_sub.add_parser(
+        "review",
+        help="record an analyst review of one anomaly flag (append-only)",
+        parents=[output_parent],
+    )
+    c_review.add_argument("case_id", help="case id")
+    c_review.add_argument(
+        "--flag",
+        required=True,
+        help="flag id '<evidence-id>:<rule-id>' (see 'case flags')",
+    )
+    c_review.add_argument(
+        "--verdict",
+        required=True,
+        choices=list(REVIEW_VERDICTS),
+        help="analyst verdict",
+    )
+    c_review.add_argument("--note", default="", help="review note")
+    c_review.set_defaults(func=cmd_case_review)
+
+    c_note = case_sub.add_parser(
+        "note", help="append an analyst note", parents=[output_parent]
+    )
+    c_note.add_argument("case_id", help="case id")
+    c_note.add_argument("text", help="note text")
+    c_note.set_defaults(func=cmd_case_note)
+
+    c_custody = case_sub.add_parser(
+        "custody",
+        help="list the chain-of-custody events",
+        parents=[output_parent],
+    )
+    c_custody.add_argument("case_id", help="case id")
+    c_custody.set_defaults(func=cmd_case_custody)
+
+    c_manifest = case_sub.add_parser(
+        "manifest",
+        help="build the evidence manifest",
+        parents=[output_parent],
+    )
+    c_manifest.add_argument("case_id", help="case id")
+    c_manifest.add_argument(
+        "--output", default=None, help="write manifest JSON to this file"
+    )
+    c_manifest.set_defaults(func=cmd_case_manifest)
+
+    c_verify = case_sub.add_parser(
+        "verify",
+        help="re-hash evidence files; report changed/missing",
+        parents=[output_parent],
+    )
+    c_verify.add_argument("case_id", help="case id")
+    c_verify.set_defaults(func=cmd_case_verify)
+
+    c_report = case_sub.add_parser(
+        "report",
+        help="write a reproducible report bundle",
+        parents=[output_parent],
+    )
+    c_report.add_argument("case_id", help="case id")
+    c_report.add_argument("--output", required=True, help="output directory")
+    c_report.add_argument(
+        "--force", action="store_true", help="overwrite a non-empty output dir"
+    )
+    c_report.set_defaults(func=cmd_case_report)
+
+    c_status = case_sub.add_parser(
+        "status",
+        help="change case status (closing requires --note)",
+        parents=[output_parent],
+    )
+    c_status.add_argument("case_id", help="case id")
+    c_status.add_argument(
+        "status", choices=["open", "in-progress", "closed"], help="new status"
+    )
+    c_status.add_argument("--note", default="", help="status-change note")
+    c_status.set_defaults(func=cmd_case_status)
 
     return parser
 

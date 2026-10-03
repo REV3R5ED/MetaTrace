@@ -5,6 +5,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-03
+
+### Added
+
+- Case management (plan Phase v0.8): new `cases/` package, SQLite case
+  database (`~/.metatrace/cases.db`, `METATRACE_STATE_DIR` override),
+  schema versioned via `PRAGMA user_version` (mismatches fail cleanly).
+- `metatrace case` with 12 subcommands: create, list, show, add,
+  flags, review, note, custody, manifest, verify, report, status.
+- Evidence model: images are hashed + snapshotted (full `analyze`
+  output frozen as JSON) — the file itself is never copied into the
+  case. `case verify` re-hashes on-disk files and reports
+  ok / changed / missing.
+- Chain of custody: every case mutation appends a UTC event with
+  `actor: analyst` (no auth system — recorded as the local user).
+- Flag reviews are append-only (`confirmed` / `dismissed` / `unsure`);
+  flags are never deleted or rewritten.
+- Reproducible report bundles with per-artifact SHA-256 manifests;
+  closing a case requires `--note`.
+- Usage guide Step 11 scenario with a real terminal screenshot.
+
 ## [0.7.0] - 2026-10-03
 
 ### Added

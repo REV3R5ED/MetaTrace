@@ -306,13 +306,63 @@ Observations from this run:
   thumbnail counts plus `files_with_thumbnails` /
   `total_thumbnails` in the summary and a `thumbnails` CSV column.
 
+## Step 11 — Put the evidence in a case (v0.8: case management)
+
+Single-image analysis answers "what does this file contain". A case
+answers "what do we know, who touched it, and what did we decide".
+MetaTrace cases live in a SQLite database
+(`~/.metatrace/cases.db`, `METATRACE_STATE_DIR` override) with a
+versioned schema — a database from a newer schema fails cleanly
+instead of being silently misread:
+
+```
+$ metatrace case create --title "Gallery dispute" --description "two photos, one story"
+$ metatrace case add MT-CASE-2026-001 /tmp/shot_a.jpg --note "exhibit A"
+$ metatrace case add MT-CASE-2026-001 /tmp/shot_b.jpg --note "exhibit B"
+$ metatrace case flags MT-CASE-2026-001
+$ metatrace case custody MT-CASE-2026-001
+```
+
+![Case creation, evidence registration, flag listing and chain of custody](images/09-case-management.png)
+
+Observations from this run:
+
+- **Evidence is hashed, never copied:** `case add` records the
+  image's SHA-256, its path, and a frozen JSON snapshot of the full
+  `analyze` output (analysis + anomaly flags). The image file itself
+  stays where it is — copying multi-gigabyte evidence into a case
+  database would be wasteful, and the hash plus snapshot is what
+  `case verify` needs to detect later modification.
+- **Flags travel with the evidence:** exhibit B's EXIF/XMP timestamp
+  conflict was caught by the anomaly engine at add time and stored
+  in the snapshot. `case flags` shows it as `unreviewed` until an
+  analyst records a verdict with `case review --flag
+  <evidence-id>:<rule-id> --verdict confirmed|dismissed|unsure`.
+  Reviews are append-only — a second review doesn't erase the first,
+  and flags are never deleted.
+- **Chain of custody is automatic:** every mutation — create, add,
+  note, review, status change, manifest, report — appends a UTC event
+  with `actor: analyst`. MetaTrace has no authentication, so the
+  record says "the local user of this machine", nothing stronger.
+- **Manifests and reports are reproducible:** `case manifest`
+  freezes paths, hashes, snapshot hashes and the custody count behind
+  a top-level SHA-256; `case verify` re-hashes the files on disk and
+  reports ok / changed / missing (changed files become high-severity
+  findings); `case report --output DIR` bundles case.json,
+  evidence.json, custody.json, flags.json, notes.txt and a
+  report-manifest.json with per-artifact digests. A non-empty output
+  dir is refused without `--force`.
+- **Closing needs a reason:** `case status CASE-ID closed` without
+  `--note` exits 2 — a case can't be closed silently.
+
 ## What's next
 
-v0.7 covers identification, hashing, full EXIF, GPS normalization,
+v0.8 covers identification, hashing, full EXIF, GPS normalization,
 XMP/IPTC/ICC extraction, timestamp and device normalization,
 descriptive cross-source comparison, single-image timelines, batch
 analysis with duplicate detection and grouping, the rule-based
-anomaly engine, and embedded thumbnail extraction with
-metadata-level comparison. The
-roadmap adds case management and full reporting — each on the same
-evidence-first foundation.
+anomaly engine, embedded thumbnail extraction with metadata-level
+comparison, and case management with chain of custody, evidence
+manifests, flag reviews and reproducible reports. The
+roadmap adds search, timelines, and geographic correlation — each on
+the same evidence-first foundation.

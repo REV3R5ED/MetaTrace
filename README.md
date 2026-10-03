@@ -10,6 +10,16 @@ The core forensic rule: **observed metadata is kept verbatim; normalized fields 
 
 MIT — see [LICENSE](LICENSE). Free for personal and commercial use.
 
+## v0.8 — what works today
+
+- **Case management**: `metatrace case create --title "..."` opens a case (`MT-CASE-2026-001` style IDs); `case list` / `case show` for overviews; `case status` moves open → in-progress → closed (closing requires `--note`)
+- **Evidence without copying**: `case add CASE-ID image.jpg --note "..."` registers an image as evidence — the file is hashed and a full `analyze` snapshot (analysis + anomaly flags) is frozen into the SQLite case DB (`~/.metatrace/cases.db`, `METATRACE_STATE_DIR` override). The image itself is never copied; the hash + snapshot is the evidence record
+- **Chain of custody**: every mutation (create, add, note, flag review, status, manifest, report) appends a custody event (UTC timestamp, action, `actor: analyst` — MetaTrace has no auth, so the record states the local user, nothing stronger). `case custody CASE-ID` lists the full chain
+- **Evidence manifests**: `case manifest CASE-ID` builds a JSON manifest (paths, SHA-256s, snapshot hashes, custody count) with a top-level SHA-256 over the canonical encoding; `case verify CASE-ID` re-hashes files on disk and reports ok / changed / missing
+- **Flag reviews**: anomaly flags are stored per evidence item; `case flags` lists them; `case review CASE-ID --flag <evidence-id>:<rule-id> --verdict confirmed|dismissed|unsure --note "..."` records an append-only review — flags are never deleted or rewritten
+- **Reproducible reports**: `case report CASE-ID --output DIR` writes case.json, evidence.json, custody.json, flags.json, notes.txt, and a report-manifest.json with per-artifact SHA-256 digests; refuses a non-empty output dir without `--force`
+- **CLI**: `metatrace case ...` (12 subcommands) with human-readable output and `--json`; structured exit codes (0 ok / 1 findings / 2 error); audit logging of every invocation
+
 ## v0.7 — what works today
 
 - **Embedded thumbnails**: `metatrace thumbnails <image>` lists embedded previews — JPEG EXIF IFD1 blobs (`JPEGInterchangeFormat`), uncompressed TIFF IFD1 strips, standalone TIFF IFD1 — with byte size, SHA-256, dimensions (JPEG SOF marker scan or TIFF tags — no pixel decoding, stdlib has no JPEG decoder), format by magic bytes, and coarse encoder signals (DQT table count / DHT presence). PNG/WebP report "no thumbnail mechanism", never an error
@@ -167,7 +177,7 @@ Per the master plan, each release is independently useful:
 - **v0.5** — Batch analysis, parallel processing, duplicate detection ✅
 - **v0.6** — Consistency/anomaly engine (confidence + explanation per flag) ✅
 - **v0.7** — Embedded thumbnail extraction + metadata-level comparison ✅
-- **v0.8** — Case management, chain of custody, evidence manifests
+- **v0.8** — Case management, chain of custody, evidence manifests ✅
 - **v0.9** — Search, timeline, geographic correlation
 - **v1.0** — Stable CLI/API, professional reporting (JSON/CSV/HTML/PDF)
 
