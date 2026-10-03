@@ -10,6 +10,14 @@ The core forensic rule: **observed metadata is kept verbatim; normalized fields 
 
 MIT — see [LICENSE](LICENSE). Free for personal and commercial use.
 
+## v0.9 — what works today
+
+- **Search index**: `metatrace batch --index photos.json` or `metatrace search --build-index DIR --index photos.json` writes a deterministic JSON index (one record per analyzed file: path, SHA-256, format, device claims, normalized timestamps, GPS, thumbnail count, anomaly rule IDs, caption/keywords). The index stores no pixel data and is queried fully offline — no re-analysis. An `index_version` field guards the format: an index from a newer/older MetaTrace fails with a clean error telling you to rebuild
+- **Composable filters (AND)**: `metatrace search --index photos.json --device "Canon" --date 2026-09-15 --date-range 2026-09-01..2026-09-30 --gps --near 49.34,-123.16,10 --anomaly timestamp-conflict --text "sunset" --hash a1b2c3d4`. `--near` uses haversine distance (stdlib math) and the radius is capped at 1000 km; `--text` is a literal substring over maker/model/software/caption/keywords/title (regex characters are never special); `--hash` takes a SHA-256 prefix (≥ 8 hex chars) or full hash
+- **Location clusters**: `metatrace search --index photos.json clusters [--same filters]` groups geotagged images with ~1km grid clustering plus adjacent-cell merging (deterministic ordering). Each cluster reports center, radius, image count, and capture-day time span — every geographic output keeps the claimed-location warning: GPS metadata is a claim, not proof
+- **Filtered timelines**: `metatrace search --index photos.json timeline [--same filters] [--format csv]` lists timestamp claims across images using the v0.4 ordering rule (UTC-known first, then timezone-naive by wall-clock, then unparseable), exportable as CSV
+- **CLI**: `metatrace search ...` with human-readable output and `--json`; structured exit codes (0 ok / 1 findings / 2 error); empty result sets are a valid outcome (exit 0, "No records match the given filters"); bad filters or an unreadable/stale index exit 2; audit logging of every invocation
+
 ## v0.8 — what works today
 
 - **Case management**: `metatrace case create --title "..."` opens a case (`MT-CASE-2026-001` style IDs); `case list` / `case show` for overviews; `case status` moves open → in-progress → closed (closing requires `--note`)
@@ -178,7 +186,7 @@ Per the master plan, each release is independently useful:
 - **v0.6** — Consistency/anomaly engine (confidence + explanation per flag) ✅
 - **v0.7** — Embedded thumbnail extraction + metadata-level comparison ✅
 - **v0.8** — Case management, chain of custody, evidence manifests ✅
-- **v0.9** — Search, timeline, geographic correlation
+- **v0.9** — Search, timeline, geographic correlation ✅
 - **v1.0** — Stable CLI/API, professional reporting (JSON/CSV/HTML/PDF)
 
 ## Forensic reliability

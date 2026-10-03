@@ -355,14 +355,57 @@ Observations from this run:
 - **Closing needs a reason:** `case status CASE-ID closed` without
   `--note` exits 2 — a case can't be closed silently.
 
+## Step 12 — Search the index (v0.9: metadata search)
+
+`batch` analyzes a directory once; `search` asks questions about the
+results without re-analyzing anything. First build a JSON index of the
+analyzed files — either as part of a batch run (`batch --index
+photos.json`) or standalone:
+
+```
+$ metatrace search --build-index /tmp/searchdemo --index /tmp/photos.json
+$ metatrace search --index /tmp/photos.json --device canon
+$ metatrace search --index /tmp/photos.json clusters
+```
+
+![Building a search index, filtering by device, and clustering geotagged images](images/10-search.png)
+
+Observations from this run:
+
+- **The index is offline and deterministic:** records are sorted by
+  path, and the file stores no pixel data — just path, SHA-256,
+  format, device claims, normalized timestamps, GPS, thumbnail count,
+  anomaly rule IDs, caption/keywords. An `index_version` field guards
+  the format: an index written by a different MetaTrace version fails
+  with a clean error telling you to rebuild.
+- **Filters compose with AND:** `--device`, `--date 2026-09-15`,
+  `--date-range 2026-09-01..2026-09-30`, `--gps`, `--near
+  49.34,-123.16,10` (haversine distance, stdlib math, radius capped at
+  1000 km), `--anomaly timestamp-conflict`, `--text "sunset"`
+  (literal substring — regex characters are never special), and
+  `--hash a1b2c3d4` (SHA-256 prefix of at least 8 hex chars, or the
+  full hash).
+- **Clusters keep the honesty:** the two geotagged Canon shots merge
+  into one ~1km cluster (radius 0.20 km, 2 files, time span of the
+  capture days); the Nikon shot has no GPS and is excluded. Every
+  geographic output carries the claimed-location warning: GPS
+  metadata is a claim, not proof.
+- **Timelines filter too:** `search timeline` lists timestamp claims
+  across the matched images using the v0.4 ordering rule (UTC-known
+  first, then timezone-naive by wall-clock, then unparseable), with
+  `--format csv` for export. Empty result sets are a valid outcome —
+  exit 0 with "No records match the given filters".
+
 ## What's next
 
-v0.8 covers identification, hashing, full EXIF, GPS normalization,
+v0.9 covers identification, hashing, full EXIF, GPS normalization,
 XMP/IPTC/ICC extraction, timestamp and device normalization,
 descriptive cross-source comparison, single-image timelines, batch
 analysis with duplicate detection and grouping, the rule-based
 anomaly engine, embedded thumbnail extraction with metadata-level
-comparison, and case management with chain of custody, evidence
-manifests, flag reviews and reproducible reports. The
-roadmap adds search, timelines, and geographic correlation — each on
-the same evidence-first foundation.
+comparison, case management with chain of custody, evidence
+manifests, flag reviews and reproducible reports, plus offline
+metadata search with composable filters, ~1km geographic clustering,
+and filtered cross-image timelines. The roadmap's last step is
+v1.0: stable CLI/API and professional reporting (JSON/CSV/HTML/PDF)
+— each on the same evidence-first foundation.

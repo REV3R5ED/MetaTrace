@@ -5,6 +5,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-03
+
+### Added
+
+- Metadata search (plan Phase v0.9): new `search/` package with a
+  deterministic JSON search index (one record per analyzed file: path,
+  SHA-256, format, device claims, normalized timestamps, GPS, thumbnail
+  count, anomaly rule IDs, caption/keywords). The index stores no pixel
+  data, is versioned (`index_version`; mismatches fail cleanly with a
+  rebuild hint), and is queried fully offline.
+- `metatrace batch --index out.json` writes the index as part of a batch
+  run; `metatrace search --build-index DIR --index out.json` builds it
+  from a directory of images.
+- `metatrace search --index idx.json` with composable AND filters:
+  `--device`, `--date YYYY-MM-DD`, `--date-range START..END`,
+  `--gps`, `--near LAT,LON,RADIUS_KM` (haversine, stdlib math, radius
+  capped at 1000 km), `--anomaly RULE-ID`, `--text` (literal substring
+  over maker/model/software/caption/keywords/title — regex characters
+  are never special), `--hash` (SHA-256 prefix >= 8 hex chars or full
+  hash).
+- `metatrace search clusters` groups geotagged matches with ~1km grid
+  clustering plus adjacent-cell merging (deterministic); each cluster
+  reports center, radius, image count, and capture-day time span. Every
+  geographic output keeps the claimed-location warning.
+- `metatrace search timeline [--format csv]` lists timestamp claims
+  across matched images using the v0.4 ordering rule (UTC-known first,
+  then timezone-naive by wall-clock, then unparseable); CSV export
+  supported.
+- Empty result sets are a valid outcome (exit 0 with a message); bad
+  filters or unreadable/stale indexes exit 2.
+
 ## [0.8.0] - 2026-10-03
 
 ### Added

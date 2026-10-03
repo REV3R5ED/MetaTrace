@@ -54,6 +54,24 @@ from metatrace.parsers import exif as exif_mod
 from metatrace.parsers import icc as icc_mod
 from metatrace.parsers import iptc as iptc_mod
 from metatrace.parsers import xmp as xmp_mod
+from metatrace.search import (
+    IndexError as SearchIndexError,
+)
+from metatrace.search.filters import (
+    SearchFilters,
+    apply_filters,
+    parse_date,
+    parse_date_range,
+    parse_hash,
+    parse_near,
+)
+from metatrace.search.geo import cluster_locations
+from metatrace.search.index import (
+    build_index,
+    read_index,
+    write_index,
+)
+from metatrace.search.timeline import build_search_timeline
 from metatrace.thumbnails import extract_thumbnails
 
 log = get_logger()
@@ -459,6 +477,21 @@ def cmd_batch(args: argparse.Namespace, cfg: AppConfig) -> Result:
         include_timeline=bool(getattr(args, "timeline", False)),
     )
     result.data = {"batch": report.to_dict()}
+
+    # v0.9: optionally persist a search index of the analyzed files.
+    index_path = getattr(args, "index", None)
+    if index_path:
+        try:
+            index = build_index(report.files, root=args.directory)
+            write_index(index_path, index)
+            result.data["index"] = {
+                "path": index_path,
+                "records": len(index.records),
+            }
+            result.summary += f", index: {len(index.records)} record(s)"
+        except OSError as exc:
+            result.fail(f"cannot write index {index_path}: {exc}")
+            return result
 
     summary = report.summary
     dup_note = (
@@ -1354,6 +1387,251 @@ def cmd_case_status(args: argparse.Namespace, cfg: AppConfig) -> Result:
     return result
 
 
+# ---------------------------------------------------------------------------
+# v0.9: search
+# ---------------------------------------------------------------------------
+
+
+def _search_filters_from_args(args: argparse.Namespace) -> SearchFilters:
+    """Build SearchFilters from CLI args; ValueError -> clean exit-2."""
+    date_range = None
+    if getattr(args, "date_range", None):
+        date_range = parse_date_range(args.date_range)
+    near = None
+    if getattr(args, "near", None):
+        near = parse_near(args.near)
+    hash_prefix = None
+    if getattr(args, "hash", None):
+        hash_prefix = parse_hash(args.hash)
+    date = None
+    if getattr(args, "date", None):
+        date = parse_date(args.date)
+    return SearchFilters(
+        device=getattr(args, "device", None),
+        date=date,
+        date_range=date_range,
+        gps_only=bool(getattr(args, "gps", False)),
+        near=near,
+        anomaly=getattr(args, "anomaly", None),
+        text=getattr(args, "text", None),
+        hash=hash_prefix,
+    )
+
+
+def cmd_search_build_index(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.9: build a search index from a directory of images."""
+    result = Result(command="search", target=args.build_index)
+    try:
+        paths = iter_candidate_files(
+            args.build_index, recursive=bool(getattr(args, "recursive", False))
+        )
+        jobs = _resolve_jobs(args, cfg)
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
+        result.fail(str(exc))
+        return result
+    results = run_batch(paths, cfg, jobs, progress=None)
+    index = build_index(results, root=args.build_index)
+    try:
+        write_index(args.index, index)
+    except OSError as exc:
+        result.fail(f"cannot write index {args.index}: {exc}")
+        return result
+    result.summary = (
+        f"index {args.index}: {len(index.records)} record(s) from {args.build_index}"
+    )
+    result.data = {
+        "search_action": "build-index",
+        "index_path": args.index,
+        "records": len(index.records),
+        "root": args.build_index,
+    }
+    return result
+
+
+def cmd_search(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.9: list index records matching the given filters (AND)."""
+    if getattr(args, "build_index", None):
+        return cmd_search_build_index(args, cfg)
+    result = Result(command="search", target=args.index)
+    try:
+        filters = _search_filters_from_args(args)
+    except ValueError as exc:
+        result.fail(str(exc))
+        return result
+    try:
+        index = read_index(args.index)
+    except SearchIndexError as exc:
+        result.fail(str(exc))
+        return result
+    matched = apply_filters(index.records, filters)
+    result.summary = (
+        f"search {args.index}: {len(matched)} of {len(index.records)} record(s) match"
+    )
+    result.data = {
+        "search_action": "search",
+        "filters": filters.describe(),
+        "total_records": len(index.records),
+        "matches": [r.to_dict() for r in matched],
+    }
+    return result
+
+
+def cmd_search_clusters(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.9: cluster geotagged index records into ~1km location clusters."""
+    if getattr(args, "build_index", None):
+        return cmd_search_build_index(args, cfg)
+    result = Result(command="search", target=args.index)
+    try:
+        filters = _search_filters_from_args(args)
+    except ValueError as exc:
+        result.fail(str(exc))
+        return result
+    try:
+        index = read_index(args.index)
+    except SearchIndexError as exc:
+        result.fail(str(exc))
+        return result
+    matched = apply_filters(index.records, filters)
+    clusters = cluster_locations(matched)
+    result.summary = (
+        f"search {args.index}: {len(clusters)} cluster(s) from "
+        f"{len(matched)} matching record(s)"
+    )
+    result.data = {
+        "search_action": "clusters",
+        "filters": filters.describe(),
+        "clusters": [c.to_dict() for c in clusters],
+        "disclaimer": LOCATION_DISCLAIMER,
+    }
+    return result
+
+
+def cmd_search_timeline(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.9: filtered cross-image timeline (v0.4 ordering rule)."""
+    if getattr(args, "build_index", None):
+        return cmd_search_build_index(args, cfg)
+    result = Result(command="search", target=args.index)
+    try:
+        filters = _search_filters_from_args(args)
+    except ValueError as exc:
+        result.fail(str(exc))
+        return result
+    try:
+        index = read_index(args.index)
+    except SearchIndexError as exc:
+        result.fail(str(exc))
+        return result
+    matched = apply_filters(index.records, filters)
+    timeline = build_search_timeline(matched)
+    result.summary = (
+        f"search {args.index}: {len(timeline)} timestamp(s) from "
+        f"{len(matched)} matching record(s)"
+    )
+    result.data = {
+        "search_action": "timeline",
+        "filters": filters.describe(),
+        "timeline": timeline,
+    }
+    return result
+
+
+def _render_search_human(data: dict[str, Any]) -> list[str]:
+    """v0.9: human-readable rendering for `search`."""
+    lines: list[str] = []
+    action = data.get("search_action")
+    if action == "build-index":
+        lines.append(f"index written: {data['index_path']}")
+        lines.append(f"records:       {data['records']}")
+        lines.append(f"root:          {data['root']}")
+        return lines
+    if action == "clusters":
+        lines.append("")
+        lines.append("Location clusters (GPS claims only):")
+        lines.append(f"  note  {data.get('disclaimer', '')}")
+        for i, c in enumerate(data.get("clusters") or []):
+            span = (
+                f"{c['time_span'][0]} .. {c['time_span'][1]}"
+                if c.get("time_span")
+                else "date unknown"
+            )
+            lines.append(
+                f"  #{i} {c['center_lat']:.4f}, {c['center_lon']:.4f} "
+                f"(radius {c['radius_km']:.2f} km): "
+                f"{c['count']} file(s), {span}"
+            )
+            for path in c["files"]:
+                lines.append(f"      {path}")
+        if not data.get("clusters"):
+            lines.append("  (no geotagged records matched)")
+        return lines
+    if action == "timeline":
+        lines.extend(_render_search_timeline_section(data.get("timeline") or []))
+        return lines
+    # default: record listing
+    matches = data.get("matches") or []
+    if not matches:
+        lines.append("")
+        lines.append("No records match the given filters.")
+        return lines
+    lines.append("")
+    lines.append(f"{'PATH':44} {'FORMAT':8} {'DEVICE':28} {'DAY':10} FLAGS")
+    for r in matches:
+        flags = ",".join(r.get("anomaly_rule_ids") or []) or "-"
+        lines.append(
+            f"{r['path'][:44]:44} {r['format'][:8]:8} "
+            f"{r['device_display'][:28]:28} {r['capture_day'][:10]:10} {flags}"
+        )
+    return lines
+
+
+def _render_search_timeline_section(timeline: list[dict[str, Any]]) -> list[str]:
+    """Render a filtered cross-image timeline (v0.4 ordering rule)."""
+    lines = [""]
+    lines.append(
+        "UTC-known claims first (chronological), then timezone-naive "
+        "claims by wall-clock, then unparseable:"
+    )
+    for entry in timeline:
+        ts = entry["timestamp"]
+        if ts.get("value_utc"):
+            shown = ts["value_utc"]
+        elif ts.get("wall"):
+            shown = f"{ts['wall']} (timezone unknown)"
+        else:
+            shown = f"unparseable: {ts.get('raw') or '?'}"
+        lines.append(
+            f"  {shown:34} {entry['filename']:24} "
+            f"{ts.get('source', '')} {ts.get('label', '')}"
+        )
+    if not timeline:
+        lines.append("  (no timestamp claims in the matching records)")
+    return lines
+
+
+def _render_search_timeline_csv(timeline: list[dict[str, Any]]) -> str:
+    """One CSV row per timeline entry."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        ["path", "filename", "timestamp", "source", "label", "timezone_status", "raw"]
+    )
+    for entry in timeline:
+        ts = entry["timestamp"]
+        shown = ts.get("value_utc") or ts.get("wall") or ""
+        writer.writerow(
+            [
+                entry["path"],
+                entry["filename"],
+                shown,
+                ts.get("source", ""),
+                ts.get("label", ""),
+                ts.get("timezone_status", ""),
+                ts.get("raw") or "",
+            ]
+        )
+    return buf.getvalue().rstrip("\n")
+
+
 def _render_case_human(data: dict[str, Any]) -> list[str]:
     """v0.8: human-readable rendering for `case` subcommands."""
     lines: list[str] = []
@@ -1427,6 +1705,12 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
         batch = result.data.get("batch")
         if batch:
             lines.extend(_render_batch_human(batch))
+        index = result.data.get("index")  # v0.9: --index write
+        if index:
+            lines.append("")
+            lines.append(
+                f"Search index: {index['records']} record(s) written to {index['path']}"
+            )
         if result.findings:
             lines.append("")
             lines.append("Findings:")
@@ -1479,6 +1763,17 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
 
     if result.command == "case":
         lines.extend(_render_case_human(result.data))
+        if result.findings:
+            lines.append("")
+            lines.append("Findings:")
+            for f in result.findings:
+                lines.append(f"  [{f.severity}] {f.title}")
+                if f.reason:
+                    lines.append(f"    {f.reason}")
+        return "\n".join(lines)
+
+    if result.command == "search":
+        lines.extend(_render_search_human(result.data))
         if result.findings:
             lines.append("")
             lines.append("Findings:")
@@ -1605,6 +1900,12 @@ def render(result: Result, args: argparse.Namespace) -> str:
         batch = result.data.get("batch")
         if batch:
             return _render_batch_csv(batch)
+    if (
+        result.command == "search"
+        and result.data.get("search_action") == "timeline"
+        and getattr(args, "format", "human") == "csv"
+    ):
+        return _render_search_timeline_csv(result.data.get("timeline") or [])
     return render_human(result, args)
 
 
@@ -1617,10 +1918,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="metatrace",
         description="MetaTrace — image forensics and metadata analysis "
-        "(v0.8: core + file identification + full EXIF/GPS + XMP/IPTC/ICC + "
+        "(v0.9: core + file identification + full EXIF/GPS + XMP/IPTC/ICC + "
         "timestamp/device normalization + cross-source comparison + timelines + "
         "batch analysis + anomaly engine + embedded thumbnails + case "
-        "management). "
+        "management + metadata search). "
         "Trace the story behind the image. MIT licensed.",
     )
     parser.add_argument(
@@ -1705,6 +2006,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--csv",
         action="store_true",
         help="emit one CSV row per file instead of human-readable output",
+    )
+    p_batch.add_argument(
+        "--index",
+        default=None,
+        metavar="PATH",
+        help="write a v0.9 search index (JSON) of the analyzed files",
     )
     p_batch.set_defaults(func=cmd_batch)
 
@@ -1870,6 +2177,102 @@ def build_parser() -> argparse.ArgumentParser:
     )
     c_status.add_argument("--note", default="", help="status-change note")
     c_status.set_defaults(func=cmd_case_status)
+
+    # v0.9: metadata search over a saved index.
+    filter_parent = argparse.ArgumentParser(add_help=False)
+    filter_parent.add_argument(
+        "--device",
+        default=None,
+        help="match device display label substring, e.g. 'Canon'",
+    )
+    filter_parent.add_argument(
+        "--date",
+        default=None,
+        help="exact capture day YYYY-MM-DD",
+    )
+    filter_parent.add_argument(
+        "--date-range",
+        default=None,
+        metavar="START..END",
+        help="inclusive capture-day range, e.g. 2026-09-01..2026-09-30",
+    )
+    filter_parent.add_argument(
+        "--gps",
+        action="store_true",
+        help="only images with decodable GPS coordinates",
+    )
+    filter_parent.add_argument(
+        "--near",
+        default=None,
+        metavar="LAT,LON,RADIUS_KM",
+        help="images with GPS within RADIUS_KM of LAT,LON (cap 1000 km)",
+    )
+    filter_parent.add_argument(
+        "--anomaly",
+        default=None,
+        metavar="RULE-ID",
+        help="only images flagged by this anomaly rule",
+    )
+    filter_parent.add_argument(
+        "--text",
+        default=None,
+        help="literal substring over maker/model/software/caption/keywords/title",
+    )
+    filter_parent.add_argument(
+        "--hash",
+        default=None,
+        metavar="SHA256",
+        help="sha256 prefix (>= 8 hex chars) or full hash",
+    )
+
+    p_search = sub.add_parser(
+        "search",
+        help="query a saved metadata index (filters AND together)",
+        parents=[output_parent, filter_parent],
+    )
+    p_search.add_argument(
+        "--index",
+        required=True,
+        help="search index JSON file (input; output with --build-index)",
+    )
+    p_search.add_argument(
+        "--build-index",
+        default=None,
+        metavar="DIR",
+        help="build the index from DIR and write it to --index",
+    )
+    p_search.add_argument(
+        "--recursive",
+        action="store_true",
+        help="descend into subdirectories when building the index",
+    )
+    p_search.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="parallel worker threads for --build-index",
+    )
+    p_search.set_defaults(func=cmd_search)
+
+    search_sub = p_search.add_subparsers(dest="search_command")
+    s_clusters = search_sub.add_parser(
+        "clusters",
+        help="group geotagged matches into ~1km location clusters",
+        parents=[output_parent, filter_parent],
+    )
+    s_clusters.set_defaults(func=cmd_search_clusters)
+    s_timeline = search_sub.add_parser(
+        "timeline",
+        help="filtered cross-image timeline (v0.4 ordering rule)",
+        parents=[output_parent, filter_parent],
+    )
+    s_timeline.add_argument(
+        "--format",
+        choices=["human", "csv"],
+        default="human",
+        help="output format (default: human)",
+    )
+    s_timeline.set_defaults(func=cmd_search_timeline)
 
     return parser
 

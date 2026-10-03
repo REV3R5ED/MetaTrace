@@ -56,6 +56,7 @@ def _analyze_one(path: str, cfg: AppConfig, header_bytes: int) -> BatchFileResul
         analysis=analysis_dict,
         findings=[f.to_dict() for f in findings],
         anomaly_count=len(flags),
+        anomaly_rule_ids=[f.rule_id for f in flags],  # v0.9 search index
         thumbnail_count=thumb_count,
     )
 

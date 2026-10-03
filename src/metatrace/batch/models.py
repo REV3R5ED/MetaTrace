@@ -24,6 +24,9 @@ class BatchFileResult:
     error: str | None = None  # human reason when status == "error"
     skipped_reason: str | None = None  # human reason when status == "skipped"
     anomaly_count: int = 0  # v0.6 engine flag count (0 when skipped/error)
+    anomaly_rule_ids: list[str] = field(  # v0.9: rule ids for search index
+        default_factory=list
+    )
     thumbnail_count: int = 0  # v0.7 embedded thumbnails (0 when skipped/error)
 
     def to_dict(self) -> dict[str, Any]:
