@@ -168,9 +168,16 @@ def build_xmp_packet(
     credit: str = "Test Agency",
     rights: str = "All rights reserved",
     tiff_make: str = "TestMake",
+    modify_date: str | None = None,
+    tiff_model: str | None = None,
 ) -> bytes:
     """A small but realistic XMP RDF packet (UTF-8)."""
     lang = 'xml:lang="x-default"'
+    extra_attrs = ""
+    if modify_date is not None:
+        extra_attrs += f'\n    xmp:ModifyDate="{modify_date}"'
+    if tiff_model is not None:
+        extra_attrs += f'\n    tiff:Model="{tiff_model}"'
     return f"""<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="MetaTraceTest">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -180,7 +187,7 @@ def build_xmp_packet(
     xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
     xmlns:tiff="http://ns.adobe.com/tiff/1.0/"
     xmp:CreatorTool="{creator_tool}"
-    xmp:CreateDate="{create_date}"
+    xmp:CreateDate="{create_date}"{extra_attrs}
     xmp:Rating="{rating}"
     photoshop:Credit="{credit}"
     tiff:Make="{tiff_make}">

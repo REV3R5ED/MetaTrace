@@ -5,9 +5,9 @@
 > the file can technically tell you — and separate what you *observe*
 > from what you *conclude*.
 >
-> Every command below is real output from MetaTrace v0.2.0
-> (screenshots 01–02 were captured under v0.1.0; the GPS step is new
-> in v0.2.0).
+> Every command below is real output from MetaTrace v0.4.0
+> (screenshots 01–02 were captured under v0.1.0, 03 under v0.2.0,
+> 04 under v0.3.0; step 7 is new in v0.4.0).
 
 ## Step 1 — Identify and hash the evidence
 
@@ -142,17 +142,60 @@ $ metatrace inspect evidence-photo.jpg --json
   "command": "inspect",
   "timestamp": "2026-10-02T23:17:17Z",
   "status": "ok",
-  "data": { "identity": {...}, "exif": {...}, "xmp": {...}, "iptc": {...}, "icc": {...} },
+  "data": { "identity": {...}, "exif": {...}, "xmp": {...}, "iptc": {...}, "icc": {...},
+            "timestamps": [...], "device": {...}, "comparison": [...], "timeline": [...] },
   ...
 }
 ```
 
 Exit codes: `0` = ok, `1` = findings/warnings, `2` = error.
 
+## Step 7 — Normalize, compare, and line up time (v0.4)
+
+A photo can carry the same fact in three different standards — and
+the three don't always agree. v0.4 parses every timestamp flavor
+into one model, normalizes device identity per source, and compares
+the claims **descriptively**: agree / differ / only-in-one-source,
+with raw values shown. No verdicts, no scores, no auto-resolution —
+judging a conflict is the v0.6 anomaly engine's job.
+
+```
+$ metatrace inspect conflict-photo.jpg
+$ metatrace timeline conflict-photo.jpg
+```
+
+![Cross-source comparison and timeline](images/05-compare-timeline.png)
+
+Observations from this file:
+
+- **Timestamps, one model:** EXIF `DateTimeOriginal` is timezone-naive
+  (`value_utc: null` — MetaTrace never invents a timezone), XMP
+  `xmp:CreateDate` carries `Z`, IPTC `DateCreated`+`TimeCreated`
+  carries `+0000`; all three normalize to comparable instants.
+- **capture_time: DIFFER** — the camera claims 2026-09-15T14:22:01
+  (naive), the publisher's XMP/IPTC claims 2026-09-14T18:42:07Z.
+  MetaTrace records the difference and shows both raws; it does not
+  pick a winner.
+- **device_make / device_model: AGREE** — EXIF says `canon` /
+  `canon eos r5`, XMP says `Canon ` / `EOS R5`. Different spellings,
+  same device: normalization sees through the variants while the raw
+  strings stay verbatim in `--json`.
+- **software: DIFFER** — EXIF `TestSoft 1.0` vs XMP `TestSoft 2.0`.
+  Recorded, not judged.
+- **Timeline:** `metatrace timeline` lines every claim up
+  chronologically — UTC-known first, then the naive EXIF claim by
+  wall-clock, each labeled with its source. The filesystem mtime is
+  listed too, explicitly marked *not image metadata*.
+
+Unparseable timestamps (a garbage XMP date, an IPTC date that isn't
+a date) are kept verbatim with `parseable: false` and surface a
+low-severity finding — never a silent drop, never a crash.
+
 ## What's next
 
-v0.3 covers identification, hashing, full EXIF, GPS normalization, and
-XMP/IPTC/ICC extraction with per-source date display. The roadmap adds
-timestamp analysis, batch processing, the anomaly engine, thumbnail
+v0.4 covers identification, hashing, full EXIF, GPS normalization,
+XMP/IPTC/ICC extraction, timestamp and device normalization,
+descriptive cross-source comparison, and single-image timelines. The
+roadmap adds batch processing, the anomaly engine, thumbnail
 inspection, case management, and full reporting — each on the same
 evidence-first foundation.

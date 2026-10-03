@@ -84,6 +84,12 @@ class ExifData:
     model: str | None = None
     software: str | None = None
     lens_model: str | None = None
+    body_serial: str | None = None  # EXIF BodySerialNumber (0xA431), verbatim
+    lens_serial: str | None = None  # EXIF LensSerialNumber (0xA433), verbatim
+    camera_owner: str | None = None  # EXIF CameraOwnerName (0xA430), verbatim
+    offset_time: str | None = None  # OffsetTime (0x9010), e.g. "+02:00"
+    offset_time_original: str | None = None  # OffsetTimeOriginal (0x9011)
+    offset_time_digitized: str | None = None  # OffsetTimeDigitized (0x9012)
     orientation: int | None = None
     orientation_name: str | None = None
     datetime_original: str | None = None  # ISO-8601, naive unless offset known
@@ -175,6 +181,112 @@ class IccData:
 
 
 @dataclass
+class NormalizedTimestamp:
+    """One timestamp claim, normalized into a common model (v0.4).
+
+    ``value_utc`` is the instant in UTC ISO-8601 (``...Z``) when the
+    source pins the timezone down; it is None for timezone-naive
+    claims — MetaTrace never invents a timezone. ``wall`` is the
+    wall-clock reading (ISO-8601, no offset) for display and for
+    comparing naive claims against each other. ``timezone_status``
+    is one of ``"explicit"`` (offset given, incl. ``Z``), ``"naive"``
+    (no timezone information), or ``"utc"`` (inherently UTC:
+    GPS, ICC, filesystem mtime). ``precision`` is ``"second"``,
+    ``"minute"``, ``"day"``, or ``"unknown"``.
+    """
+
+    label: str  # "capture" | "digitized" | "file" | "modified" | "gps" | ...
+    source: str  # e.g. "EXIF DateTimeOriginal", "XMP xmp:CreateDate"
+    raw: str | None  # verbatim observed value
+    value_utc: str | None = None
+    wall: str | None = None
+    precision: str = "unknown"
+    timezone_status: str = "naive"  # "explicit" | "naive" | "utc"
+    parseable: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DeviceClaim:
+    """Device identity as claimed by one metadata source (v0.4).
+
+    ``*_norm`` are display-friendly canonical forms; ``*_key`` are
+    comparison keys (lowercase alphanumeric) so "canon eos r5" and
+    "Canon EOS R5" compare equal. Raw values stay verbatim in the
+    parser models — nothing here overwrites them.
+    """
+
+    source: str  # e.g. "EXIF", "XMP tiff:Make/tiff:Model"
+    make_raw: str | None = None
+    model_raw: str | None = None
+    software_raw: str | None = None
+    make_norm: str | None = None
+    model_norm: str | None = None
+    software_norm: str | None = None
+    make_key: str | None = None
+    model_key: str | None = None
+    software_key: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DeviceIdentity:
+    """Normalized device identity across sources (v0.4).
+
+    Serial numbers are kept verbatim — they are identifiers, and
+    normalizing them would destroy information.
+    """
+
+    claims: list[DeviceClaim] = field(default_factory=list)
+    body_serial: str | None = None  # EXIF BodySerialNumber, verbatim
+    lens_serial: str | None = None  # EXIF LensSerialNumber, verbatim
+    camera_owner: str | None = None  # EXIF CameraOwnerName, verbatim
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["claims"] = [c.to_dict() for c in self.claims]
+        return d
+
+
+@dataclass
+class ComparedValue:
+    """One source's value inside a cross-field comparison (v0.4)."""
+
+    source: str
+    raw: str | None
+    normalized: str | None  # display form (UTC instant, wall clock, or norm string)
+    key: str  # comparison key; equal keys mean "agree"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ComparisonFact:
+    """One logical fact compared across metadata sources (v0.4).
+
+    ``status`` is ``"agree"``, ``"differ"``, ``"only-in-one-source"``,
+    or ``"no-data"``. This is descriptive bookkeeping — it records
+    whether sources say the same thing, never a verdict on
+    authenticity. Judging conflicts is the v0.6 anomaly engine's job.
+    """
+
+    fact: str  # "capture_time" | "device_make" | "device_model" | "software"
+    status: str
+    values: list[ComparedValue] = field(default_factory=list)
+    note: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["values"] = [v.to_dict() for v in self.values]
+        return d
+
+
+@dataclass
 class Analysis:
     """Complete v0.1 analysis of one image file."""
 
@@ -188,6 +300,10 @@ class Analysis:
     xmp: XmpData = field(default_factory=XmpData)  # v0.3
     iptc: IptcData = field(default_factory=IptcData)  # v0.3
     icc: IccData = field(default_factory=IccData)  # v0.3
+    timestamps: list[NormalizedTimestamp] = field(default_factory=list)  # v0.4
+    device: DeviceIdentity | None = None  # v0.4
+    comparison: list[ComparisonFact] = field(default_factory=list)  # v0.4
+    timeline: list[NormalizedTimestamp] = field(default_factory=list)  # v0.4
     parser_warnings: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
 
@@ -195,4 +311,8 @@ class Analysis:
         d = asdict(self)
         d["identity"] = self.identity.to_dict() if self.identity else None
         d["exif"] = self.exif.to_dict()
+        d["timestamps"] = [t.to_dict() for t in self.timestamps]
+        d["device"] = self.device.to_dict() if self.device else None
+        d["comparison"] = [c.to_dict() for c in self.comparison]
+        d["timeline"] = [t.to_dict() for t in self.timeline]
         return d

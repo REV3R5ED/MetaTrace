@@ -78,8 +78,8 @@ def test_inspect_png_no_exif(tmp_path, capsys):
 
 
 def test_inspect_v03_sections_and_dates_side_by_side(tmp_path, capsys):
-    """v0.3: XMP/IPTC/ICC sections render; same logical date from three
-    sources is shown side by side, never merged into one value."""
+    """v0.3 sections render; v0.4 compares the same logical date across
+    sources descriptively — agree/differ, never merged, never judged."""
     tiff = build_tiff(ifd0=standard_ifd0(), exif=standard_exif())
     exif_seg = (0xE1, b"Exif\x00\x00" + tiff)
     xmp_seg = (0xE1, b"http://ns.adobe.com/xap/1.0/\x00" + build_xmp_packet())
@@ -97,14 +97,17 @@ def test_inspect_v03_sections_and_dates_side_by_side(tmp_path, capsys):
     assert "A harbor at dusk." in out
     assert "ICC profile (header" in out
     assert "display device" in out
-    # Multi-source dates: all three claims visible, none merged.
+    # v0.4 descriptive comparison: all three claims visible, none merged.
+    assert "Cross-source comparison (descriptive" in out
     assert "EXIF DateTimeOriginal" in out
     assert "2026-09-15T14:22:01" in out  # EXIF claim
     assert "XMP xmp:CreateDate" in out
     assert "2026-09-14T18:42:07Z" in out  # XMP claim
     assert "IPTC DateCreated" in out
     assert "2026-09-14" in out  # IPTC claim
-    assert "never merged" in out
+    assert "not a verdict" in out
+    # EXIF (2026-09-15 naive) vs XMP/IPTC (2026-09-14 UTC): differ, recorded.
+    assert "capture_time: DIFFER" in out
 
     code = main(["inspect", path, "--json"])
     env = json.loads(capsys.readouterr().out)
@@ -189,7 +192,7 @@ def test_version_flag(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert "0.3.0" in capsys.readouterr().out
+    assert "0.4.0" in capsys.readouterr().out
 
 
 def test_help_flag():

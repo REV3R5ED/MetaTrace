@@ -93,3 +93,11 @@ register(
         commands=["inspect"],
     )
 )
+register(
+    ModuleInfo(
+        name="normalize",
+        description="Timestamp & device normalization, cross-field "
+        "comparison, timelines (v0.4)",
+        commands=["inspect", "timeline"],
+    )
+)

@@ -1,4 +1,4 @@
-"""MetaTrace CLI: ``metatrace inspect <image>`` (v0.3).
+"""MetaTrace CLI: ``metatrace inspect <image>`` (v0.4).
 
 Every command returns a shared result envelope, renders human-readable
 text by default (``--json`` for automation), uses structured exit
@@ -28,6 +28,7 @@ from metatrace.core.models import Analysis
 from metatrace.core.results import EXIT_ERROR, Finding, Result, exit_code_for
 from metatrace.geo import LOCATION_DISCLAIMER, osm_link
 from metatrace.image import identify as identify_mod
+from metatrace.normalize import build_normalization
 from metatrace.parsers import exif as exif_mod
 from metatrace.parsers import icc as icc_mod
 from metatrace.parsers import iptc as iptc_mod
@@ -42,7 +43,7 @@ log = get_logger()
 
 
 def analyze_image(path: str, cfg: AppConfig) -> tuple[Analysis, list[Finding]]:
-    """Run the v0.3 pipeline: hash -> identify -> EXIF -> XMP/IPTC/ICC.
+    """Run the v0.4 pipeline: hash -> identify -> EXIF -> XMP/IPTC/ICC -> normalize.
 
     Read-only. Each parser is defensive: failures become warnings and
     findings, never exceptions.
@@ -58,7 +59,9 @@ def analyze_image(path: str, cfg: AppConfig) -> tuple[Analysis, list[Finding]]:
         raise IsADirectoryError(f"not a regular file: {path}")
     if not p.is_file():
         raise ValueError(f"not a regular file: {path}")
-    size = p.stat().st_size
+    st = p.stat()
+    size = st.st_size
+    fs_mtime = st.st_mtime
     if max_size and size > max_size:
         raise ValueError(
             f"file is {size} bytes, over the {max_size}-byte limit "
@@ -167,6 +170,10 @@ def analyze_image(path: str, cfg: AppConfig) -> tuple[Analysis, list[Finding]]:
         + list(iptc.warnings)
         + list(icc.warnings),
     )
+
+    # 5. v0.4 normalization: timestamps, device identity, descriptive
+    # cross-source comparison, single-image timeline.
+    findings.extend(build_normalization(analysis, fs_mtime))
     return analysis, findings
 
 
@@ -211,6 +218,28 @@ def cmd_inspect(args: argparse.Namespace, cfg: AppConfig) -> Result:
     result.summary = (
         f"{ident.filename}: {ident.format} {dims}, "
         f"{ident.size_bytes} bytes, {meta_note}"
+    )
+    return result
+
+
+def cmd_timeline(args: argparse.Namespace, cfg: AppConfig) -> Result:
+    """v0.4: chronological list of every normalized timestamp claim."""
+    result = Result(command="timeline", target=args.image)
+    try:
+        analysis, findings = analyze_image(args.image, cfg)
+    except (FileNotFoundError, IsADirectoryError, ValueError, OSError) as exc:
+        result.fail(str(exc))
+        return result
+    result.data = {
+        "timeline": [t.to_dict() for t in analysis.timeline],
+        "evidence_id": analysis.evidence_id,
+    }
+    for finding in findings:
+        result.add_finding(finding)
+    assert analysis.identity is not None
+    result.summary = (
+        f"timeline for {analysis.identity.filename}: "
+        f"{len(analysis.timeline)} timestamp(s)"
     )
     return result
 
@@ -359,45 +388,58 @@ def _render_icc_section(icc: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _render_dates_section(analysis_data: dict[str, Any]) -> list[str]:
-    """Same logical field, multiple sources — side by side, never merged.
+def _render_comparison_section(analysis_data: dict[str, Any]) -> list[str]:
+    """Descriptive cross-source comparison (v0.4).
 
-    Cross-source comparison (agreement/conflict) is the v0.6 anomaly
-    engine's job. This section only places the claims next to each
-    other so an analyst can see them together.
+    Records whether sources state the same thing — agree / differ /
+    only-in-one-source — without resolving conflicts or judging them.
+    Judging conflicts is the v0.6 anomaly engine's job.
     """
-    rows: list[tuple[str, str | None]] = []
-    exif_d = analysis_data["exif"]
-    if exif_d["datetime_original"] or exif_d["datetime_original_raw"]:
-        rows.append(
-            (
-                "EXIF DateTimeOriginal",
-                exif_d["datetime_original"] or exif_d["datetime_original_raw"],
-            )
-        )
-    xmp_basic = analysis_data["xmp"]["xmp_basic"]
-    if xmp_basic.get("create_date"):
-        rows.append(("XMP xmp:CreateDate", xmp_basic["create_date"]))
-    if xmp_basic.get("modify_date"):
-        rows.append(("XMP xmp:ModifyDate", xmp_basic["modify_date"]))
-    iptc_fields = analysis_data["iptc"]["fields"]
-    if iptc_fields.get("date_created") or iptc_fields.get("date_created_raw"):
-        rows.append(
-            (
-                "IPTC DateCreated",
-                iptc_fields["date_created"] or iptc_fields["date_created_raw"],
-            )
-        )
-    if not rows:
+    facts = analysis_data.get("comparison") or []
+    if not facts:
         return []
     lines = [""]
-    lines.append("Capture dates claimed per source (side by side, never merged):")
-    for label, value in rows:
-        lines.append(f"  {label:<22} {_fmt_exif_value(value)}")
+    lines.append("Cross-source comparison (descriptive — not a verdict):")
+    for fact in facts:
+        status = fact["status"].replace("-", " ")
+        lines.append(f"  {fact['fact']}: {status.upper()}")
+        for value in fact["values"]:
+            lines.append(
+                f"    {value['source']}: {_fmt_exif_value(value['normalized'])}"
+            )
+            if value["raw"] and str(value["raw"]) != str(value["normalized"]):
+                lines.append(f"      raw: {value['raw']!r}")
+        if not fact["values"]:
+            lines.append("    (no parseable claims)")
     lines.append(
-        "  note: cross-source comparison is the v0.6 anomaly engine's job; "
-        "metatrace records each claim independently."
+        "  note: timezone-aware claims compare by UTC instant; "
+        "timezone-naive claims compare by wall-clock as written. "
+        "Agreement or difference here is not an authenticity verdict."
     )
+    return lines
+
+
+def _render_timeline_section(timeline: list[dict[str, Any]]) -> list[str]:
+    """Chronological list of timestamp claims (v0.4 `timeline` command)."""
+    lines = [""]
+    if not timeline:
+        lines.append("No timestamp claims found.")
+        return lines
+    lines.append(
+        "UTC-known claims first (chronological), then timezone-naive "
+        "claims by wall-clock, then unparseable:"
+    )
+    for ts in timeline:
+        if ts["value_utc"]:
+            when = ts["value_utc"]
+            tz = "utc" if ts["timezone_status"] == "utc" else "explicit->utc"
+        elif ts["wall"]:
+            when = f"{ts['wall']} (timezone unknown)"
+            tz = "naive"
+        else:
+            when = f"unparseable: {ts['raw']!r}"
+            tz = "n/a"
+        lines.append(f"  {when:<38} {ts['source']} ({ts['label']}) [{tz}]")
     return lines
 
 
@@ -407,6 +449,18 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
         lines.append(result.summary)
     if result.status == "error":
         return "\n".join(lines) if lines else "error"
+
+    if result.command == "timeline":
+        timeline = result.data.get("timeline") or []
+        lines.extend(_render_timeline_section(timeline))
+        if result.findings:
+            lines.append("")
+            lines.append("Findings:")
+            for f in result.findings:
+                lines.append(f"  [{f.severity}] {f.title}")
+                if f.reason:
+                    lines.append(f"    {f.reason}")
+        return "\n".join(lines)
 
     analysis_data = result.data.get("analysis")
     if not analysis_data:
@@ -444,6 +498,9 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
             ("model", exif_d["model"]),
             ("software", exif_d["software"]),
             ("lens", exif_d["lens_model"]),
+            ("body_serial", exif_d.get("body_serial")),
+            ("lens_serial", exif_d.get("lens_serial")),
+            ("camera_owner", exif_d.get("camera_owner")),
             (
                 "orientation",
                 f"{exif_d['orientation']} ({exif_d['orientation_name']})"
@@ -496,7 +553,7 @@ def render_human(result: Result, args: argparse.Namespace) -> str:
     lines.extend(_render_xmp_section(analysis_data["xmp"]))
     lines.extend(_render_iptc_section(analysis_data["iptc"]))
     lines.extend(_render_icc_section(analysis_data["icc"]))
-    lines.extend(_render_dates_section(analysis_data))
+    lines.extend(_render_comparison_section(analysis_data))
 
     if analysis_data["parser_warnings"]:
         lines.append("")
@@ -529,7 +586,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="metatrace",
         description="MetaTrace — image forensics and metadata analysis "
-        "(v0.3: core + file identification + full EXIF/GPS + XMP/IPTC/ICC). "
+        "(v0.4: core + file identification + full EXIF/GPS + XMP/IPTC/ICC + "
+        "timestamp/device normalization + cross-source comparison + timelines). "
         "Trace the story behind the image. MIT licensed.",
     )
     parser.add_argument(
@@ -558,7 +616,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_inspect = sub.add_parser(
         "inspect",
-        help="identify a file, hash it, extract EXIF + GPS + XMP/IPTC/ICC",
+        help="identify a file, hash it, extract EXIF + GPS + XMP/IPTC/ICC, "
+        "normalize timestamps/devices, compare across sources",
         parents=[output_parent],
     )
     p_inspect.add_argument("image", help="path to the image file (read-only)")
@@ -574,6 +633,14 @@ def build_parser() -> argparse.ArgumentParser:
         "(URL only, no network request)",
     )
     p_inspect.set_defaults(func=cmd_inspect)
+
+    p_timeline = sub.add_parser(
+        "timeline",
+        help="chronological list of every normalized timestamp claim",
+        parents=[output_parent],
+    )
+    p_timeline.add_argument("image", help="path to the image file (read-only)")
+    p_timeline.set_defaults(func=cmd_timeline)
 
     p_config = sub.add_parser("config", help="configuration")
     config_sub = p_config.add_subparsers(dest="config_command", required=True)

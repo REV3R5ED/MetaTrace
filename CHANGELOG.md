@@ -5,6 +5,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-02
+
+### Added
+
+- Timestamp & device normalization, cross-field comparison, timelines
+  (plan Phase 6): new `normalize/` package, pure stdlib.
+- `normalize/timestamps.py`: every timestamp flavor parsed into one
+  `NormalizedTimestamp` model — EXIF `DateTimeOriginal`/`CreateDate`/
+  `ModifyDate` (+ `OffsetTime*` offsets converted to UTC, naive claims
+  keep `value_utc: null`), XMP ISO-8601 (numeric offsets converted,
+  date-only → day precision), IPTC `DateCreated`+`TimeCreated`,
+  GPS (UTC), ICC creation time (UTC per ICC spec), filesystem mtime
+  (labeled as filesystem, never image metadata). A timezone is never
+  invented; unparseable values are kept verbatim with `parseable:
+  false` and surface a low-severity "unparseable timestamp" finding
+  for XMP/IPTC.
+- `normalize/devices.py`: maker/model/software normalized per source —
+  case/whitespace/punctuation-insensitive comparison keys plus
+  canonical display forms ("canon"/"Canon "/"CANON INC." → "Canon";
+  model prefixed to "Make Model" form when the maker is known).
+  EXIF serial numbers (`BodySerialNumber`, `LensSerialNumber`,
+  `CameraOwnerName`) extracted verbatim — identifiers are never
+  normalized.
+- `normalize/compare.py`: descriptive cross-field comparison of
+  capture time, device make/model and software chain across
+  EXIF/XMP/IPTC — agree / differ / only-in-one-source / no-data with
+  raw values shown. No verdicts, no scores, no auto-resolution;
+  every fact states the comparison rule and that agreement is not an
+  authenticity verdict (judging conflicts is the v0.6 anomaly
+  engine's job).
+- `normalize/timeline.py` + `metatrace timeline <image>`: chronological
+  list of every timestamp claim — UTC-known first, then
+  timezone-naive by wall-clock, then unparseable — human + `--json`.
+- `metatrace inspect` renders the EXIF serial fields and a new
+  "Cross-source comparison" section (replacing the v0.3 side-by-side
+  date display whose note is now outdated).
+
 ## [0.3.0] - 2026-10-02
 
 ### Added

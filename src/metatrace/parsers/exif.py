@@ -68,6 +68,9 @@ TAG_NAMES: dict[int, str] = {
     0x829D: "FNumber",
     0x920A: "FocalLength",
     0x9209: "Flash",
+    0xA430: "CameraOwnerName",
+    0xA431: "BodySerialNumber",
+    0xA433: "LensSerialNumber",
     0xA434: "LensModel",
 }
 
@@ -444,6 +447,12 @@ def extract_exif(
     exif.model = _as_str(raw.get(0x0110))
     exif.software = _as_str(raw.get(0x0131))
     exif.lens_model = _as_str(raw.get(0xA434))
+    exif.camera_owner = _as_str(raw.get(0xA430))
+    exif.body_serial = _as_str(raw.get(0xA431))
+    exif.lens_serial = _as_str(raw.get(0xA433))
+    exif.offset_time = _as_str(raw.get(0x9010))
+    exif.offset_time_original = _as_str(raw.get(0x9011))
+    exif.offset_time_digitized = _as_str(raw.get(0x9012))
 
     orientation = _as_int(raw.get(0x0112))
     exif.orientation = orientation
