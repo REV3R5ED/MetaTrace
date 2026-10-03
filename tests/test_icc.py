@@ -4,14 +4,7 @@ from __future__ import annotations
 
 import struct
 
-from metatrace.parsers import icc as icc_mod
-from metatrace.parsers.icc import (
-    find_icc_in_jpeg,
-    find_icc_in_png,
-    find_icc_in_tiff,
-    parse_icc_header,
-)
-from tests.conftest import (
+from conftest import (
     build_icc_app2,
     build_icc_profile,
     build_iccp_chunk,
@@ -20,6 +13,14 @@ from tests.conftest import (
     build_png_with_chunks,
     build_tiff,
     build_tiff_file,
+)
+
+from metatrace.parsers import icc as icc_mod
+from metatrace.parsers.icc import (
+    find_icc_in_jpeg,
+    find_icc_in_png,
+    find_icc_in_tiff,
+    parse_icc_header,
 )
 
 # ---------------------------------------------------------------------------

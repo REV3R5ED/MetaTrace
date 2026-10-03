@@ -2,15 +2,7 @@
 
 from __future__ import annotations
 
-from metatrace.parsers import xmp as xmp_mod
-from metatrace.parsers.xmp import (
-    find_xmp_in_jpeg,
-    find_xmp_in_png,
-    find_xmp_in_tiff,
-    find_xmp_in_webp,
-    parse_rdf,
-)
-from tests.conftest import (
+from conftest import (
     build_itxt_chunk,
     build_jpeg_no_exif,
     build_jpeg_with_exif,
@@ -22,6 +14,15 @@ from tests.conftest import (
     build_xmp_packet,
     standard_exif,
     standard_ifd0,
+)
+
+from metatrace.parsers import xmp as xmp_mod
+from metatrace.parsers.xmp import (
+    find_xmp_in_jpeg,
+    find_xmp_in_png,
+    find_xmp_in_tiff,
+    find_xmp_in_webp,
+    parse_rdf,
 )
 
 XMP_HEADER = b"http://ns.adobe.com/xap/1.0/\x00"

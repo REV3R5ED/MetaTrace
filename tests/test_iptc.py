@@ -5,19 +5,19 @@ from __future__ import annotations
 import struct
 
 import pytest
+from conftest import (
+    build_iptc_8bim,
+    build_iptc_dataset,
+    build_jpeg_no_exif,
+    build_jpeg_with_segments,
+    standard_iptc_datasets,
+)
 
 from metatrace.parsers import iptc as iptc_mod
 from metatrace.parsers.iptc import (
     find_iptc_in_jpeg,
     iter_8bim,
     parse_iptc_record,
-)
-from tests.conftest import (
-    build_iptc_8bim,
-    build_iptc_dataset,
-    build_jpeg_no_exif,
-    build_jpeg_with_segments,
-    standard_iptc_datasets,
 )
 
 
